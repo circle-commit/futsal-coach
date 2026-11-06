@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>풋살 코치 · 수업 영상 분석</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="top">
+  <a href="#home" class="brand">⚽ 풋살 코치</a>
+  <nav>
+    <a href="#home">수업 기록</a>
+    <a href="#kids">아이 명단</a>
+    <a href="#new" class="btn primary">새 수업 분석</a>
+  </nav>
+</header>
+
+<main id="view"></main>
+
+<!-- 화면 조각들: 자바스크립트가 복사해서 #view에 넣는다 -->
+<template id="t-home">
+  <section class="panel">
+    <h1>수업 기록</h1>
+    <p class="sub">드론으로 위에서 찍은 수업 영상을 넣으면 아이마다 뛴 거리, 위치, 공 터치를 분석해요. 영상은 이 컴퓨터 밖으로 나가지 않아요.</p>
+    <div id="sessions" class="list"></div>
+  </section>
+  <section class="panel">
+    <h2>백업</h2>
+    <p class="sub">기록은 이 브라우저에만 저장돼요. 브라우저 데이터를 지우면 사라지니 가끔 백업 파일을 받아 두세요.</p>
+    <div class="row-btns">
+      <button id="bExport" class="btn">백업 파일 받기</button>
+      <label class="btn">백업 불러오기<input id="fImport" type="file" accept="application/json,.json" hidden></label>
+    </div>
+    <p id="backupMsg" class="note" role="status"></p>
+  </section>
+</template>
+
+<template id="t-new">
+  <section class="panel">
+    <h1>새 수업 분석</h1>
+    <ol class="steps" id="steps">
+      <li data-s="1">영상 고르기</li><li data-s="2">코트 모서리</li><li data-s="3">팀 색</li><li data-s="4">분석</li>
+    </ol>
+
+    <div data-step="1">
+      <label class="drop" id="drop">
+        <input id="fVideo" type="file" accept="video/*" hidden>
+        <b>수업 영상을 끌어다 놓거나 눌러서 고르세요</b>
+        <span>드론이 한자리에서 코트 전체를 위에서 찍은 영상이 좋아요 (mp4·mov)</span>
+      </label>
+      <p class="note" id="sampleWrap" hidden><button id="bSample" class="link">샘플 영상으로 해 보기</button></p>
+      <p class="err" id="videoErr" role="alert"></p>
+    </div>
+
+    <div data-step="2" hidden>
+      <p class="hint" id="cornerHint"></p>
+      <div class="stage"><canvas id="cv"></canvas></div>
+      <div class="form-row">
+        <label>코트 길이 <input id="courtL" type="number" min="10" max="60" step="0.5" value="40"> m</label>
+        <label>코트 폭 <input id="courtW" type="number" min="5" max="40" step="0.5" value="20"> m</label>
+        <button id="bCornerReset" class="btn">모서리 다시 찍기</button>
+        <button id="bCornerNext" class="btn primary" disabled>다음</button>
+      </div>
+      <p class="note">코트 크기로 거리·속도를 계산해요. 정확히 모르면 줄자로 재거나 시설에 물어보세요. 표준 풋살장은 40×20m예요.</p>
+    </div>
+
+    <div data-step="3" hidden>
+      <p class="hint" id="teamHint">팀마다 그 팀 조끼를 입은 아이를 한 명씩 눌러 주세요.</p>
+      <div class="stage"><canvas id="cv3"></canvas></div>
+      <div class="form-row">
+        <label class="grow">장면 <input id="scrub" type="range" min="0" max="1000" value="100"></label>
+      </div>
+      <div id="teams" class="teams-edit"></div>
+      <div class="form-row">
+        <label>수업 제목 <input id="title" type="text" placeholder="예: 3학년 2반 풋살"></label>
+        <label>날짜 <input id="date" type="date"></label>
+        <button id="bRun" class="btn primary" disabled>분석 시작</button>
+      </div>
+      <p class="note">원이 아이마다 하나씩 붙는지 장면을 몇 군데 넘겨 확인해 보세요. 팀별 인원을 알면 '인원'에 적어 주세요. 비워 두면 영상에서 가장 자주 보인 수로 정해요.</p>
+    </div>
+
+    <div data-step="4" hidden>
+      <p class="hint" id="runHint">영상을 빠르게 넘기며 분석하고 있어요. 이 탭을 연 채로 두세요.</p>
+      <div class="progress"><i id="bar"></i></div>
+      <p class="note" id="runMsg"></p>
+      <button id="bCancel" class="btn">멈추기</button>
+    </div>
+    <video id="vid" class="work-video" playsinline muted preload="auto"></video>
+  </section>
+</template>
+
+<template id="t-session">
+  <section class="panel">
+    <div class="head-row">
+      <div><h1 id="sTitle"></h1><p class="sub" id="sMeta"></p></div>
+      <div class="row-btns">
+        <label class="btn" id="linkVideo">영상 연결<input id="fLink" type="file" accept="video/*" hidden></label>
+        <button id="bDelete" class="btn danger">기록 지우기</button>
+      </div>
+    </div>
+  </section>
+  <div class="grid2">
+    <section class="panel" id="videoPanel">
+      <h2>경기 영상 <small>노란 원 = 자동 추적 중인 아이 · 초록 원 = 공(베타)</small></h2>
+      <div class="vwrap"><video id="sv" controls muted playsinline></video><canvas id="ov"></canvas></div>
+    </section>
+    <section class="panel">
+      <h2>전술 보드
+        <span class="ctl">
+          <button data-tg="trail" aria-pressed="true">이동 꼬리</button>
+          <button data-tg="ball" aria-pressed="true">공</button>
+          <button data-tg="heat" aria-pressed="false">히트맵</button>
+        </span>
+      </h2>
+      <canvas id="board" class="board"></canvas>
+      <div class="clock" id="clockRow">
+        <button id="bPlay" class="btn small" aria-label="재생">▶</button>
+        <input id="clock" type="range" min="0" step="0.1" aria-label="시간">
+        <span id="clockTxt"></span>
+      </div>
+      <h3>팀 간격 (뭉침 지수)</h3>
+      <canvas id="spread"></canvas>
+      <p class="note">팀원끼리 평균 거리예요. 낮을수록 다 같이 공 쪽으로 몰려 있다는 뜻이에요. 그래프를 누르면 그 장면으로 가요.</p>
+    </section>
+  </div>
+  <section class="panel">
+    <h2>아이별 활동량 <small>이름 칸에서 명단의 아이를 고르면 수업마다 기록이 쌓여요</small></h2>
+    <div class="teams-sum" id="teamsSum"></div>
+    <div class="cards" id="cards"></div>
+    <p class="note" id="assumeNote"></p>
+  </section>
+  <section class="panel">
+    <h2>패스 연결 <span class="beta">베타</span> <small>선 굵기 = 패스 횟수 · 점 위치 = 그 아이의 평균 위치</small></h2>
+    <div class="pass-grid" id="passNets"></div>
+    <p class="note">공은 화면에서 아주 작아서 자동 인식이 틀릴 때가 있어요. 패스·공 소유 숫자는 참고용으로 봐 주세요.</p>
+  </section>
+</template>
+
+<template id="t-kids">
+  <section class="panel">
+    <h1>아이 명단</h1>
+    <form id="kidForm" class="form-row">
+      <label class="grow">이름 <input id="kidName" type="text" required maxlength="20" placeholder="아이 이름"></label>
+      <button class="btn primary">추가</button>
+    </form>
+    <div id="kidList" class="list"></div>
+  </section>
+</template>
+
+<template id="t-kid">
+  <section class="panel">
+    <div class="head-row">
+      <div><h1 id="kName"></h1><p class="sub" id="kMeta"></p></div>
+      <div class="row-btns"><button id="bRename" class="btn">이름 바꾸기</button><button id="bKidDel" class="btn danger">명단에서 빼기</button></div>
+    </div>
+    <h2>수업마다 뛴 거리</h2>
+    <canvas id="kChart" class="kchart"></canvas>
+    <table class="tbl" id="kTable"></table>
+  </section>
+</template>
+
+<div id="dialog" class="dialog" hidden role="dialog" aria-modal="true" aria-labelledby="dlgMsg">
+  <div class="dlg-box"><p id="dlgMsg"></p><input id="dlgInput" type="text" hidden>
+    <div class="row-btns"><button id="dlgNo" class="btn">취소</button><button id="dlgYes" class="btn primary">확인</button></div></div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
