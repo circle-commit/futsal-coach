@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>공 위치 정답 표시</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,"Apple SD Gothic Neo",sans-serif; background:#111614; color:#e6ebe8; }
+  header { display:flex; gap:16px; align-items:center; padding:10px 16px; border-bottom:1px solid #26302b; flex-wrap:wrap; }
+  header b { font-size:16px; }
+  .btn { font:inherit; font-size:13px; background:#1d2622; color:#e6ebe8; border:1px solid #33403a; border-radius:8px; padding:6px 12px; cursor:pointer; }
+  .btn.primary { background:#1f7a52; border-color:#1f7a52; }
+  .btn:disabled { opacity:.4; cursor:not-allowed; }
+  #stage { position:relative; margin:0 auto; max-width:100vw; }
+  #cv { display:block; width:100%; cursor:crosshair; }
+  #lens { position:absolute; width:220px; height:220px; border:2px solid #ffd400; border-radius:50%; pointer-events:none; display:none; background:#000; overflow:hidden; }
+  .bar { display:flex; gap:14px; align-items:center; padding:8px 16px; font-size:13px; flex-wrap:wrap; }
+  .bar kbd { background:#26302b; border-radius:4px; padding:1px 6px; font-family:inherit; }
+  .prog { height:6px; background:#26302b; } .prog i { display:block; height:100%; background:#1f7a52; width:0; }
+  #msg { color:#ffd400; }
+  .start { max-width:640px; margin:60px auto; line-height:1.7; padding:0 16px; }
+  .start li { margin:4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <b>⚽ 공 위치 정답 표시</b>
+  <span id="info"></span>
+  <span style="flex:1"></span>
+  <button id="bSave" class="btn primary" disabled>정답 파일 받기</button>
+</header>
+<div class="prog"><i id="prog"></i></div>
+
+<div class="start" id="start">
+  <h2>사용법</h2>
+  <ol>
+    <li>분석할 <b>원본 영상</b>을 고르세요. 영상은 이 컴퓨터 밖으로 나가지 않아요.</li>
+    <li>영상 전체에서 고른 장면 <b>200개</b>가 차례로 나와요.</li>
+    <li>공 한가운데를 <b>누르면</b> 다음 장면으로 넘어가요. 마우스 근처가 노란 원 안에 크게 보여요.</li>
+    <li>공이 아이 몸에 가려져 안 보이면 <kbd>H</kbd>, 헷갈리면 <kbd>S</kbd>(건너뛰기), 이전 장면은 <kbd>←</kbd>.</li>
+    <li>중간에 닫아도 이 브라우저에 저장돼요. 다 하면 <b>정답 파일 받기</b>.</li>
+  </ol>
+  <p><label class="btn primary">영상 고르기<input id="file" type="file" accept="video/*" hidden></label>
+     <button id="bSample" class="btn" hidden>샘플 영상</button></p>
+</div>
+
+<div id="work" hidden>
+  <div class="bar">
+    <span id="pos"></span>
+    <span id="msg"></span>
+    <span style="flex:1"></span>
+    <span>누르기 = 공 · <kbd>H</kbd> 가려짐 · <kbd>S</kbd> 건너뛰기 · <kbd>←</kbd>/<kbd>→</kbd> 이동</span>
+    <button id="bHidden" class="btn">가려짐 (H)</button>
+    <button id="bSkip" class="btn">건너뛰기 (S)</button>
+  </div>
+  <div id="stage"><canvas id="cv"></canvas><canvas id="lens" width="220" height="220"></canvas></div>
+</div>
+<video id="v" muted playsinline preload="auto" hidden></video>
+
+<script>
+const COUNT = 200, v = document.getElementById('v'), cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const lens = document.getElementById('lens'), lctx = lens.getContext('2d');
+let key = '', times = [], labels = {}, idx = 0, frame = null;
+
+// 영상 이름으로 고정된 무작위 → 다시 열어도 같은 장면들
+function seeded(str) { let h = 2166136261; for (const c of str) h = Math.imul(h ^ c.charCodeAt(0), 16777619); return () => ((h = Math.imul(h ^ (h >>> 15), 2246822507) ^ Math.imul(h ^ (h >>> 13), 3266489909)) >>> 0) / 4294967296; }
+const save = () => { try { localStorage.setItem(key, JSON.stringify(labels)); } catch {} document.getElementById('bSave').disabled = !Object.keys(labels).length; };
+const seek = t => new Promise(r => { v.onseeked = () => r(); v.currentTime = t; });
+
+async function open(url, name) {
+  v.src = url;
+  await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = () => rej(new Error('영상을 열 수 없어요')); });
+  key = 'label:' + name + ':' + Math.round(v.duration);
+  const rnd = seeded(key), d = v.duration;
+  // 영상 전체에 고르게: 200칸으로 나누고 칸마다 한 장 (처음·끝 1초 제외)
+  times = Array.from({ length: COUNT }, (_, i) => +(1 + ((i + rnd()) / COUNT) * (d - 2)).toFixed(2));
+  try { labels = JSON.parse(localStorage.getItem(key) || '{}'); } catch { labels = {}; }
+  idx = times.findIndex(t => !labels[t]); if (idx < 0) idx = 0;
+  cv.width = v.videoWidth; cv.height = v.videoHeight;
+  document.getElementById('info').textContent = `${name} · ${v.videoWidth}×${v.videoHeight} · ${Math.round(d)}초`;
+  document.getElementById('start').hidden = true; document.getElementById('work').hidden = false;
+  save(); show();
+}
+async function show() {
+  await seek(times[idx]);
+  ctx.drawImage(v, 0, 0); frame = ctx.getImageData(0, 0, cv.width, cv.height);
+  draw();
+}
+function draw() {
+  ctx.putImageData(frame, 0, 0);
+  const l = labels[times[idx]], k = cv.width / 1280;
+  if (l?.state === 'ball') { ctx.strokeStyle = '#3dff7a'; ctx.lineWidth = 3 * k; ctx.beginPath(); ctx.arc(l.x * cv.width, l.y * cv.height, 14 * k, 0, 7); ctx.stroke(); }
+  const done = Object.keys(labels).length;
+  document.getElementById('pos').textContent = `${idx + 1} / ${COUNT} 장면 (${times[idx]}초) · 표시 ${done}개`;
+  document.getElementById('msg').textContent = l ? { ball: '✓ 공 표시함', hidden: '가려짐으로 표시함', skip: '건너뜀' }[l.state] : '';
+  document.getElementById('prog').style.width = (done / COUNT) * 100 + '%';
+}
+function mark(state, x, y) {
+  labels[times[idx]] = state === 'ball' ? { state, x: +x.toFixed(5), y: +y.toFixed(5) } : { state };
+  save(); draw();
+  if (idx < COUNT - 1) { idx++; show(); } else document.getElementById('msg').textContent = '다 했어요! 정답 파일을 받아 주세요.';
+}
+const rel = e => { const r = cv.getBoundingClientRect(); return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, r]; };
+cv.onclick = e => { const [x, y] = rel(e); mark('ball', x, y); };
+// 돋보기: 마우스 주변 60px를 220px로
+cv.onmousemove = e => {
+  const [x, y, r] = rel(e), sx = x * cv.width, sy = y * cv.height, src = 60 * (cv.width / 1920);
+  lens.style.display = 'block'; lens.style.left = (e.clientX - r.left + 20) + 'px'; lens.style.top = (e.clientY - r.top - 240) + 'px';
+  lctx.imageSmoothingEnabled = false;
+  lctx.drawImage(cv, sx - src / 2, sy - src / 2, src, src, 0, 0, 220, 220);
+  lctx.strokeStyle = '#ffd400'; lctx.beginPath(); lctx.moveTo(110, 95); lctx.lineTo(110, 125); lctx.moveTo(95, 110); lctx.lineTo(125, 110); lctx.stroke();
+};
+cv.onmouseleave = () => { lens.style.display = 'none'; };
+document.getElementById('bHidden').onclick = () => mark('hidden');
+document.getElementById('bSkip').onclick = () => mark('skip');
+addEventListener('keydown', e => {
+  if (document.getElementById('work').hidden) return;
+  if (e.key === 'h' || e.key === 'H' || e.key === 'ㅗ') mark('hidden');
+  else if (e.key === 's' || e.key === 'S' || e.key === 'ㄴ') mark('skip');
+  else if (e.key === 'ArrowLeft' && idx > 0) { idx--; show(); }
+  else if (e.key === 'ArrowRight' && idx < COUNT - 1) { idx++; show(); }
+});
+document.getElementById('bSave').onclick = () => {
+  const out = { video: key.split(':')[1], duration: v.duration, width: v.videoWidth, height: v.videoHeight, note: 'x, y는 영상 가로·세로에 대한 비율(0~1)',
+    labels: times.filter(t => labels[t]).map(t => ({ t, ...labels[t] })) };
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], { type: 'application/json' }));
+  a.download = `공정답-${out.video.replace(/\.[^.]+$/, '')}.json`; a.click();
+};
+document.getElementById('file').onchange = e => { const f = e.target.files[0]; if (f) open(URL.createObjectURL(f), f.name).catch(err => alert(err.message)); };
+fetch('../samples/sample.mp4', { method: 'HEAD' }).then(r => { if (!r.ok) return; const b = document.getElementById('bSample'); b.hidden = false; b.onclick = () => open('../samples/sample.mp4', 'sample.mp4'); }).catch(() => {});
+</script>
+</body>
+</html>
