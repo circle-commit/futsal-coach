@@ -78,3 +78,9 @@ canvas.board { width:100%; display:block; border-radius:10px; }
 .dlg-box { background:#fff; border-radius:14px; padding:20px; width:min(420px,90vw); display:flex; flex-direction:column; gap:12px; }
 .dlg-box p { margin:0; } .dlg-box input { font:inherit; padding:8px; border:1px solid var(--line); border-radius:8px; } .dlg-box .row-btns { justify-content:flex-end; }
 @media (max-width:900px) { .grid2 { grid-template-columns:1fr; } main { padding:12px; } .top { padding:12px; } }
+.school { border:1px solid var(--line); border-radius:12px; padding:12px 14px; margin-top:12px; }
+.school-head { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+.school-head b { font-size:16px; } .school-head span { color:var(--sub); font-size:13px; }
+.tbl-wrap { overflow-x:auto; }
+.tbl td.num a { text-decoration:none; font-weight:600; }
+.chip { display:inline-block; font-size:12px; background:#eef1ee; border-radius:999px; padding:2px 10px; margin:2px 4px 0 0; text-decoration:none; color:var(--ink); }

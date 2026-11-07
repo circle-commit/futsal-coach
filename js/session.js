@@ -1,12 +1,12 @@
 // 수업 결과 화면: 영상·전술 보드·팀 간격·아이 카드·패스 연결
-import { $, mount, onLeave, esc, ask, sessionVideos } from './app.js';
+import { $, mount, onLeave, esc, ask, sessionVideos, orgIndex } from './app.js';
 import * as store from './store.js';
 import { fit, drawCourt, courtHeight, heatCanvas, fmtTime } from './court.js';
 import { homography, applyH } from './vision.js';
 
 export async function renderSession(id) {
   mount('t-session');
-  let [s, kids] = await Promise.all([store.getSession(id), store.listKids()]);
+  let [s, kids, org] = await Promise.all([store.getSession(id), store.listKids(), orgIndex()]);
   if (!s) throw new Error('이 수업 기록을 찾을 수 없어요');
   const R = s.result, P = R.players, [L, W] = R.court, dt = R.dt, N = P[0].path.length / 2, T = R.teams;
   const color = p => T[p.team].color, num = p => p.label.split(' ').pop();
@@ -14,7 +14,7 @@ export async function renderSession(id) {
   let sel = null; const show = { trail: true, ball: true, heat: false };
 
   $('#sTitle').textContent = s.title;
-  $('#sMeta').textContent = `${s.date} · ${fmtTime(R.duration)} · 아이 ${P.length}명`;
+  $('#sMeta').textContent = `${org.groupLabel(s.groupId)} · ${s.date} · ${fmtTime(R.duration)} · 아이 ${P.length}명`;
   $('#bDelete').onclick = async () => {
     if (!(await ask(`'${s.title}' 기록을 지울까요? 되돌릴 수 없어요.`, { ok: '지우기' }))) return;
     await store.deleteSession(id); sessionVideos.delete(id); location.hash = '#home';
@@ -128,8 +128,10 @@ export async function renderSession(id) {
     if (value === '__new') {
       const name = await ask('새 아이 이름', { input: '' });
       if (!name) return renderCards();
-      const k = { id: store.uid(), name }; await store.putKid(k); kids = await store.listKids(); value = k.id;
+      const k = { id: store.uid(), name, groupIds: [s.groupId] }; await store.putKid(k); kids = await store.listKids(); value = k.id; // 이 수업의 반에 넣음
     }
+    const picked = kids.find(k => k.id === value);
+    if (picked && !picked.groupIds?.includes(s.groupId)) { await store.putKid({ ...picked, groupIds: [...(picked.groupIds || []), s.groupId] }); kids = await store.listKids(); } // 다른 반 아이를 고르면 이 반에도 넣음
     const a = { ...s.assign };
     for (const [pid, kid] of Object.entries(a)) if (kid === value) delete a[pid]; // 한 아이는 한 자리에만
     if (value) a[p.id] = value; else delete a[p.id];
@@ -141,7 +143,11 @@ export async function renderSession(id) {
     for (const p of [...P].sort((a, b) => b.distance - a.distance)) {
       const c = document.createElement('div'); c.className = 'card' + (sel === p.id ? ' sel' : '');
       c.tabIndex = 0; c.setAttribute('role', 'button'); c.setAttribute('aria-pressed', sel === p.id);
-      const opts = kids.map(k => `<option value="${k.id}" ${s.assign[p.id] === k.id ? 'selected' : ''}>${esc(k.name)}</option>`).join('');
+      // 이 반 아이를 먼저, 다른 반 아이는 반 이름과 함께 아래에
+      const opt = k => `<option value="${k.id}" ${s.assign[p.id] === k.id ? 'selected' : ''}>${esc(k.name)}</option>`;
+      const mine = kids.filter(k => k.groupIds?.includes(s.groupId)), rest = kids.filter(k => !k.groupIds?.includes(s.groupId));
+      const opts = `<optgroup label="${esc(org.group[s.groupId]?.name ?? '이 반')}">${mine.map(opt).join('')}</optgroup>` +
+        (rest.length ? `<optgroup label="다른 반">${rest.map(k => `<option value="${k.id}" ${s.assign[p.id] === k.id ? 'selected' : ''}>${esc(k.name)} (${esc(k.groupIds.map(org.groupLabel).join(', '))})</option>`).join('')}</optgroup>` : '');
       c.innerHTML = `<div class="nm"><span class="dot" style="background:${color(p)}"></span>
           <select aria-label="${esc(p.label)} 이름"><option value="">${esc(p.label)}</option>${opts}<option value="__new">+ 새 아이 추가…</option></select></div>
         <div class="row">뛴 거리 <b>${Math.round(p.distance)} m</b></div>

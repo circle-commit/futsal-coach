@@ -11,7 +11,7 @@
   <a href="#home" class="brand">⚽ 풋살 코치</a>
   <nav>
     <a href="#home">수업 기록</a>
-    <a href="#kids">아이 명단</a>
+    <a href="#orgs">학교·반</a>
     <a href="#new" class="btn primary">새 수업 분석</a>
   </nav>
 </header>
@@ -23,6 +23,7 @@
   <section class="panel">
     <h1>수업 기록</h1>
     <p class="sub">드론으로 위에서 찍은 수업 영상을 넣으면 아이마다 뛴 거리, 위치, 공 터치를 분석해요. 영상은 이 컴퓨터 밖으로 나가지 않아요.</p>
+    <div class="form-row"><label>보기 <select id="filter" aria-label="학교·반으로 거르기"></select></label></div>
     <div id="sessions" class="list"></div>
   </section>
   <section class="panel">
@@ -44,6 +45,11 @@
     </ol>
 
     <div data-step="1">
+      <div class="form-row where">
+        <label>학교 <select id="selSchool"></select></label>
+        <label>반 <select id="selGroup"></select></label>
+      </div>
+      <p class="note">어느 학교 어느 반 수업인지 먼저 골라 주세요. 학교마다 코트 크기와 모서리 위치를 기억해 다음에 불러와요.</p>
       <label class="drop" id="drop">
         <input id="fVideo" type="file" accept="video/*" hidden>
         <b>수업 영상을 끌어다 놓거나 눌러서 고르세요</b>
@@ -137,21 +143,40 @@
   </section>
 </template>
 
-<template id="t-kids">
+<template id="t-orgs">
   <section class="panel">
-    <h1>아이 명단</h1>
-    <form id="kidForm" class="form-row">
-      <label class="grow">이름 <input id="kidName" type="text" required maxlength="20" placeholder="아이 이름"></label>
+    <div class="head-row">
+      <div><h1>학교·반</h1><p class="sub">학교 아래에 반(수업 그룹)을 만들고 반마다 아이 명단을 관리해요. 한 아이를 여러 반에 넣을 수 있어요.</p></div>
+      <button id="bAddSchool" class="btn primary">학교 추가</button>
+    </div>
+    <div id="orgList"></div>
+  </section>
+</template>
+
+<template id="t-group">
+  <section class="panel">
+    <div class="head-row">
+      <div><p class="sub" id="gSchool"></p><h1 id="gName"></h1><p class="sub" id="gMeta"></p></div>
+      <div class="row-btns"><button id="bGRename" class="btn">반 이름 바꾸기</button><button id="bGDel" class="btn danger">반 지우기</button></div>
+    </div>
+    <form id="gKidForm" class="form-row">
+      <label class="grow">아이 추가 <input id="gKidName" type="text" maxlength="40" placeholder="이름 (다른 반 아이는 목록에서 고르기)" list="allKids" required></label>
+      <datalist id="allKids"></datalist>
       <button class="btn primary">추가</button>
     </form>
-    <div id="kidList" class="list"></div>
+    <p class="note">다른 반에 이미 있는 아이를 목록에서 고르면 그 아이를 이 반에도 넣어요. 기록이 한 아이로 이어져요.</p>
+    <div id="gKids" class="list"></div>
+  </section>
+  <section class="panel">
+    <h2>수업별 분당 뛴 거리 <small>숫자를 누르면 그 수업으로 가요 · 수업 길이가 달라서 분당 거리로 비교해요</small></h2>
+    <div class="tbl-wrap"><table class="tbl" id="gTable"></table></div>
   </section>
 </template>
 
 <template id="t-kid">
   <section class="panel">
     <div class="head-row">
-      <div><h1 id="kName"></h1><p class="sub" id="kMeta"></p></div>
+      <div><h1 id="kName"></h1><p class="sub" id="kGroups"></p><p class="sub" id="kMeta"></p></div>
       <div class="row-btns"><button id="bRename" class="btn">이름 바꾸기</button><button id="bKidDel" class="btn danger">명단에서 빼기</button></div>
     </div>
     <h2>수업마다 뛴 거리</h2>
