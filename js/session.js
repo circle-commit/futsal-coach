@@ -14,6 +14,7 @@ export async function renderSession(id) {
   let sel = null; const show = { trail: true, ball: true, heat: false };
 
   $('#sTitle').textContent = s.title;
+  $('#toTactics').href = '#t-' + id;
   $('#sMeta').textContent = `${org.groupLabel(s.groupId)} · ${s.date} · ${fmtTime(R.duration)} · 아이 ${P.length}명`;
   $('#bDelete').onclick = async () => {
     if (!(await ask(`'${s.title}' 기록을 지울까요? 되돌릴 수 없어요.`, { ok: '지우기' }))) return;

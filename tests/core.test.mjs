@@ -89,3 +89,16 @@ test('팀 색: 범위가 겹쳐도 색 중심이 가까운 팀으로, 덩어리 
   assert.deepEqual(d.players.map(l => l.length), [1, 1]);
   assert.ok(d.players[0][0][0] < 15 && d.players[1][0][0] > 20);
 });
+
+test('전술: 볼록 껍질과 면적, 폭·깊이·수비 라인', async () => {
+  const { convexHull, polyArea, computeTactics } = await import('../js/tactics.js');
+  const h = convexHull([[0, 0], [4, 0], [4, 3], [0, 3], [2, 1]]);
+  assert.equal(h.length, 4); assert.equal(polyArea(h), 12);
+  // 팀0: 골키퍼(x=1) + 필드 3명, 왼쪽 골을 지킴
+  const N = 20, mk = (id, team, x, y) => ({ id, team, path: Array.from({ length: 2 * N }, (_, i) => (i % 2 ? y : x)), hidden: new Array(N).fill(0) });
+  const R = { dt: 0.1, court: [40, 20], teams: [{ name: 'A' }, { name: 'B' }], ball: new Array(2 * N).fill(null),
+    players: [mk(0, 0, 1, 10), mk(1, 0, 10, 5), mk(2, 0, 10, 15), mk(3, 0, 16, 10), mk(4, 1, 30, 10), mk(5, 1, 25, 8)] };
+  const t = computeTactics(R);
+  assert.equal(t.gk[0], 0);
+  assert.deepEqual([t.metrics[0].width[5], t.metrics[0].depth[5], t.metrics[0].defLine[5], t.metrics[0].area[5]].map(v => +v.toFixed(1)), [10, 6, 10, 30]);
+});

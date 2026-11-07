@@ -198,11 +198,12 @@ async function kid(id) {
 
 async function route() {
   const h = location.hash || '#home';
-  const tab = h.startsWith('#g-') || h.startsWith('#k-') ? '#orgs' : h.startsWith('#s-') ? '#home' : h;
+  const tab = h.startsWith('#g-') || h.startsWith('#k-') ? '#orgs' : h.startsWith('#s-') || h.startsWith('#t-') ? '#home' : h;
   document.querySelectorAll('.top nav a').forEach(a => a.toggleAttribute('aria-current', a.getAttribute('href') === tab));
   try {
     if (h === '#new') await (await import('./new.js')).renderNew();
     else if (h.startsWith('#s-')) await (await import('./session.js')).renderSession(h.slice(3));
+    else if (h.startsWith('#t-')) await (await import('./tactics-view.js')).renderTactics(h.slice(3));
     else if (h === '#orgs' || h === '#kids') await orgs();
     else if (h.startsWith('#g-')) await group(h.slice(3));
     else if (h.startsWith('#k-')) await kid(h.slice(3));

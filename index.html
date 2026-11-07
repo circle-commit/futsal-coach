@@ -101,6 +101,7 @@
     <div class="head-row">
       <div><h1 id="sTitle"></h1><p class="sub" id="sMeta"></p></div>
       <div class="row-btns">
+        <a class="btn primary" id="toTactics">전술 분석 보기</a>
         <label class="btn" id="linkVideo">영상 연결<input id="fLink" type="file" accept="video/*" hidden></label>
         <button id="bDelete" class="btn danger">기록 지우기</button>
       </div>
@@ -183,6 +184,31 @@
     <canvas id="kChart" class="kchart"></canvas>
     <table class="tbl" id="kTable"></table>
   </section>
+</template>
+
+<template id="t-tactics">
+  <div class="tac">
+    <div class="tac-top">
+      <div><a id="tBack" class="tac-back">← 결과로</a><div class="tac-label">전술 분석</div><div class="tac-teams" id="tTeams"></div><div class="tac-sub" id="tSub"></div><label class="tac-back tac-link" id="tLink">＋ 영상 연결 (영상 위에 팀 영역 보기)<input id="tFile" type="file" accept="video/*" hidden></label></div>
+      <div class="tac-clock"><b id="tTime">0:00</b><span id="tDur"></span></div>
+      <div class="tac-poss"><div class="tac-label">공 점유율 <span class="beta">베타</span></div><div class="poss-nums"><b id="tPossA"></b><b id="tPossB"></b></div><div class="poss-bar" id="tPossBar"></div></div>
+    </div>
+    <div class="tac-grid">
+      <div class="tac-main">
+        <div class="tac-card" id="tVideoBox"><div class="vwrap"><video id="tv" muted playsinline></video><canvas id="tov"></canvas></div></div>
+        <div class="tac-card">
+          <div class="tac-label">팀이 차지한 면적 <small>골키퍼를 뺀 아이들을 잇는 다각형 넓이 (m²)</small></div>
+          <div class="area-row"><canvas id="tArea"></canvas><div class="with"><div class="tac-label">공 있을 때 / 없을 때</div><div id="tWith"></div><small>지금까지 평균</small></div></div>
+        </div>
+      </div>
+      <div class="tac-side">
+        <div class="tac-card"><div class="tac-label">경기장 지도 <small id="tMapSize"></small></div><canvas id="tMap"></canvas></div>
+        <div class="tac-card"><div class="tac-label">맞대결 <small>골키퍼 제외 · 지금 이 순간</small></div><div id="tH2H"></div></div>
+        <div class="tac-card"><div class="tac-label">뛴 거리 <small>지금까지 상위 4명</small></div><div id="tTop"></div></div>
+      </div>
+    </div>
+    <div class="tac-ctl"><button id="tPlay" class="tac-play" aria-label="재생">▶</button><input id="tClock" type="range" min="0" step="0.1" aria-label="시간"></div>
+  </div>
 </template>
 
 <div id="dialog" class="dialog" hidden role="dialog" aria-modal="true" aria-labelledby="dlgMsg">

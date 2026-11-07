@@ -186,5 +186,5 @@ export function possession(ball, players, dt, near = 1.0) {
     (players[a.p].team === players[b.p].team ? passes : turnovers).push({ from: a.p, to: b.p, t: +(a.e * dt).toFixed(1) });
   }
   const time = players.map((_, k) => merged.filter(g => g.p === k).reduce((s, g) => s + (g.e - g.s) * dt, 0));
-  return { passes, turnovers, time, touches: players.map((_, k) => merged.filter(g => g.p === k).length) };
+  return { passes, turnovers, time, touches: players.map((_, k) => merged.filter(g => g.p === k).length), segments: merged };
 }
