@@ -1,5 +1,5 @@
 // 프레임별 검출(m 좌표) → 선수 추적 → 활동량. 순수 함수라 node 테스트로 확인한다.
-// frames: [{ t, players: [[[x,y],...] 팀별], ball: [[x,y],...] }]
+// frames: [{ t, players: [[[x,y],...] 팀별], ball: [[x,y],...] }] (+ classical-v2 검출은 split·uncol·kidFg: vision.detect 설명)
 
 // 헝가리안 최소 비용 매칭. cost: n x m. 반환: 행마다 열 번호(없으면 -1)
 export function assign(cost) {
@@ -86,6 +86,17 @@ export const TRACK_V2 = Object.freeze({
   //   몸 큰 사람으로 보고, 그 사람 덩어리는 나누지 않는다(다른 아이를 놓쳐 팀이 모자랄 때 큰 사람을 둘로 나눠 빈 번호를 채우던 문제)
   splitNear: 1.0, // 붙은 두 아이 중심은 0.75m 안(몸 반지름 0.225m×2 + 조끼 조각 묶는 거리)이라 나눈 자리는 각 아이 자리 근처. 예측 떨림 여유를 더해 1m
   bigShare: 0.25, // 혼자 보일 때 4장 중 1장 넘게 후보가 나오면 그 사람 자체가 큼 (보통 아이는 거의 0: 자세로 1.6배를 넘는 일은 드묾). 낮게 잡아 애매하면 안 나눔
+  // 조끼 색을 잠깐 놓친 아이 잇기 (검출 uncol·kidFg, 검출 버전 3. runTeamV2). 트랙(매칭·다시 잡기)은 잇기 없는 v2와 똑같이 두고 "잇는 길"만 옆에서 따로 따라간다:
+  //   직전 장면에 색으로 보였던 트랙을 이번 장면에 못 잡으면, 색 없는 움직임 덩어리 중 크기가 그 팀 아이 한 명 몸 넓이(kidFg 영상 중앙값)의
+  //   bridgeMin~bridgeMax배이고, 예측 자리에서 bridgeTol 안이고, 모든 팀 색 검출에서 bridgeSep 밖이고, 그 장면에서 다른 아이(다른 팀 포함)가 이은 적 없는
+  //   가장 가까운 덩어리로 잇는다(색으로 마지막 본 뒤 bridgeLen초까지). 트랙이 색으로 다시 잡혔을 때 그 틈이 fillGap(0.3초)보다 길고 다시 잡은 자리가
+  //   이은 끝의 예측에서 bridgeTol 안이면 이은 칸을 채운다. 채울 때는 시작 치우침(첫 덩어리 − 놓치기 전 예측)과 끝 치우침(이은 끝의 예측 − 다시 잡은 자리)을
+  //   시각에 따라 선형으로 빼서, 덩어리에 붙은 그림자나 옆에서 나란히 달린 어른처럼 일정하게 어긋난 만큼을 없앤다. 그 밖(끊김·0.3초 이하 틈·다른 자리에서
+  //   다시 잡힘·영상 끝)엔 아무것도 바꾸지 않는다. 그래서 원래 보이던 칸·다시 잡는 시점은 잇기 없는 v2와 같고, 가려짐으로 남던 긴 틈만 채워진다
+  bridgeTol: 0.6, // 덩어리 중심(몸 전체)은 조끼 중심과 조금 다르고 예측도 떨려서 몸 지름(0.45m)보다 조금 크게. 붙은 두 아이 간격(0.75m)보다는 작게
+  bridgeSep: 0.5, // 색으로 보이는 사람 바로 옆 덩어리는 그 사람 몸의 색 없는 부분(팔다리·그림자)일 수 있어 안 씀 (몸 지름 0.45m 바로 위)
+  bridgeLen: 1.5, // 합성 장면의 색 놓침(0.2~0.9초, escort 1.4~1.5초)이 다 들어가는 길이 (2.0초도 17장면 결과가 같고, 1.0초면 escort를 못 이음). 더 긴 놓침은 지금처럼 가려짐으로 남겨 검수에서 보이게
+  bridgeMin: 0.3, bridgeMax: 2.0, // 색 놓친 아이 덩어리는 한 명 넓이의 0.14~0.80배(10~90%, 중앙 0.44: 조끼 부분이 빠짐)라 하한 0.3 (0.5면 37%만 잡힘). 2배 넘으면 여럿이 붙은 덩어리
 });
 
 const outsideOf = (d, [L, W]) => Math.max(0, -d[0], d[0] - L, -d[1], d[1] - W); // 코트 선 밖으로 나간 거리 (안이면 0)
@@ -116,10 +127,16 @@ function fillGaps(pos, hid, frames, C) {
 }
 const FAR = 1e9;
 
-function runTeamV2(frames, team, init, idxs, pos, hid, court) {
+// kid: 이 팀 아이 한 명 몸 넓이(px, 0이면 잇지 않음), used: 장면마다 이미 이은 덩어리 번호 (모든 팀이 같이 씀: 한 덩어리로 두 아이를 잇지 않게)
+function runTeamV2(frames, team, init, idxs, pos, hid, court, kid, used) {
   const C = TRACK_V2, [L, W] = court;
   const isEdge = d => d[0] < C.edge || d[1] < C.edge || d[0] > L - C.edge || d[1] > W - C.edge;
-  const tr = init.map(([x, y]) => ({ x, y, vx: 0, vy: 0, lt: frames[idxs[0]].t, seen: true, chain: null }));
+  // br: 잇는 길 { t0: 색으로 마지막 본 시각, x·y·vx·vy·lt·seen: 이은 끝 상태(트랙과 같은 방식으로 갱신), o1: 시작 치우침, cells: [[장면, x, y, 덩어리], …] }
+  const tr = init.map(([x, y]) => ({ x, y, vx: 0, vy: 0, lt: frames[idxs[0]].t, seen: true, chain: null, br: null }));
+  // 예측 이동량 = 속도 × g(가려진 시간): 처음엔 τ로 줄어들며 늘다가 vHold부터 줄어 2·vHold에서 0 (오래된 속도는 버림)
+  const gOf = dt => C.tau * (1 - Math.exp(-Math.min(dt, C.vHold) / C.tau)) * Math.max(0, 1 - Math.max(0, dt - C.vHold) / C.vHold);
+  const ahead = (k, t) => { const dt = Math.abs(t - k.lt), g = gOf(dt); return { x: k.x + k.vx * g, y: k.y + k.vy * g, dt }; }; // k(트랙·잇는 길)에서 시각 t를 내다본 자리
+  const off = (k, t, d) => { const dt = Math.abs(t - k.lt); return [d[0] - (k.x + k.vx * dt), d[1] - (k.y + k.vy * dt)]; }; // 잇기 치우침: d − k에서 등속으로 간 자리 (한 장면이라 줄이지 않음)
   // 검출 d(시각 t)로 트랙 갱신. 속도는 직전 장면에도 보였고 간격이 짧을 때만 새로 잼
   const take = (k, d, t) => {
     const dt = Math.abs(t - k.lt);
@@ -134,10 +151,8 @@ function runTeamV2(frames, team, init, idxs, pos, hid, court) {
   const alone = tr.map(() => 0), bigN = tr.map(() => 0);
   const isBig = r => alone[r] > 0 && bigN[r] >= C.bigShare * alone[r];
   for (const i of idxs) {
-    const f = frames[i], raw = f.players[team], ok = new Set(), used = new Set();
-    // 예측 이동량 = 속도 × g(가려진 시간): 처음엔 τ로 줄어들며 늘다가 vHold부터 줄어 2·vHold에서 0 (오래된 속도는 버림)
-    const gOf = dt => C.tau * (1 - Math.exp(-Math.min(dt, C.vHold) / C.tau)) * Math.max(0, 1 - Math.max(0, dt - C.vHold) / C.vHold);
-    const pred = tr.map(k => { const dt = Math.abs(f.t - k.lt), g = gOf(dt); return { x: k.x + k.vx * g, y: k.y + k.vy * g, dt }; });
+    const f = frames[i], raw = f.players[team], ok = new Set(), usedDet = new Set();
+    const pred = tr.map(k => ahead(k, f.t));
     const held = r => Math.min(pred[r].dt, C.holdMax); // 반경이 커지는 시간은 holdMax까지
     const reach = (k, r, d) => Math.hypot(d[0] - k.x, d[1] - k.y) <= C.margin + C.vmax * held(r);
     // 붙은 덩어리 나누기 (TRACK_V2 splitNear·bigShare 설명): 덩어리를 이어 온 보이던 트랙이 있고, 그 트랙이 몸 큰 사람이 아닐 때만 나눈 자리를 검출로 쓴다
@@ -162,7 +177,7 @@ function runTeamV2(frames, team, init, idxs, pos, hid, court) {
       const full = raw.length === tr.length; // 팀 전원이 따로 보임 = 나누기는 안 썼고, 붙은 아이가 있을 수 없는 장면
       assign(cost).forEach((j, r) => {
         if (j >= 0 && cost[r][j] < FAR) {
-          take(tr[r], det[j], f.t); tr[r].chain = null; ok.add(r); used.add(j);
+          take(tr[r], det[j], f.t); tr[r].chain = null; ok.add(r); usedDet.add(j);
           if (full) { alone[r]++; if (cands.some(s => s[1] === j)) bigN[r]++; }
         }
       });
@@ -173,7 +188,7 @@ function runTeamV2(frames, team, init, idxs, pos, hid, court) {
       if (ok.has(r)) return;
       const last = k.chain?.[k.chain.length - 1];
       det.forEach((d, j) => {
-        if (used.has(j) || !isEdge(d) || outsideOf(d, court) > C.rosterOut || !reach(k, r, d)) return; // 선 밖 멀리(관중·코치)로는 다시 잡지 않음
+        if (usedDet.has(j) || !isEdge(d) || outsideOf(d, court) > C.rosterOut || !reach(k, r, d)) return; // 선 밖 멀리(관중·코치)로는 다시 잡지 않음
         const c = Math.hypot(d[0] - pred[r].x, d[1] - pred[r].y);
         if (c > C.pathTol + C.pathSpeed * held(r)) return; // 예측 경로와 안 맞음
         const cont = !!last && Math.hypot(d[0] - last.d[0], d[1] - last.d[1]) <= C.margin + C.vmax * Math.abs(f.t - last.t);
@@ -183,8 +198,8 @@ function runTeamV2(frames, team, init, idxs, pos, hid, court) {
     cand.sort((a, b) => b.cont - a.cont || a.c - b.c || a.r - b.r || a.j - b.j); // 이어지는 줄을 먼저
     const got = new Set();
     for (const { r, j, cont } of cand) {
-      if (got.has(r) || used.has(j)) continue;
-      got.add(r); used.add(j);
+      if (got.has(r) || usedDet.has(j)) continue;
+      got.add(r); usedDet.add(j);
       const k = tr[r], d = det[j], chain = cont ? [...k.chain, { i, t: f.t, d }] : [{ i, t: f.t, d }];
       if (chain.length < C.confirm) { k.chain = chain; continue; }
       for (const e of chain.slice(0, -1)) { pos[r][2 * e.i] = e.d[0]; pos[r][2 * e.i + 1] = e.d[1]; hid[r][e.i] = 0; } // 확인된 장면들도 채움
@@ -194,15 +209,49 @@ function runTeamV2(frames, team, init, idxs, pos, hid, court) {
       const sp = Math.hypot(vx, vy); if (sp > C.vmax) { vx *= C.vmax / sp; vy *= C.vmax / sp; }
       k.vx = vx; k.vy = vy;
     }
+    // 조끼 색을 잠깐 놓친 아이 잇기 (TRACK_V2 bridge… 설명): 막 놓쳤거나 잇는 중인 트랙 → 맞는 덩어리 중 가까운 것부터 하나씩. 트랙 상태는 그대로 둔다
+    const bridged = new Set();
+    if (f.uncol && kid > 0) {
+      const colored = f.players.flat(), bc = [];
+      tr.forEach((k, r) => {
+        if (ok.has(r) || got.has(r) || !(k.br || k.seen) || Math.abs(f.t - (k.br ? k.br.t0 : k.lt)) > C.bridgeLen + 1e-9) return;
+        const p = k.br ? ahead(k.br, f.t) : pred[r]; // 잇는 중이면 이은 끝에서, 막 놓쳤으면 트랙에서 내다본 자리
+        f.uncol.forEach((u, q) => {
+          const z = u[2] / kid, c = Math.hypot(u[0] - p.x, u[1] - p.y);
+          if (!used[i]?.has(q) && z >= C.bridgeMin && z <= C.bridgeMax && c <= C.bridgeTol && colored.every(d => Math.hypot(d[0] - u[0], d[1] - u[1]) >= C.bridgeSep)) bc.push({ r, q, c });
+        });
+      });
+      bc.sort((a, b) => a.c - b.c || a.r - b.r || a.q - b.q);
+      const taken = new Set();
+      for (const { r, q } of bc) {
+        if (taken.has(q) || bridged.has(r)) continue;
+        taken.add(q); bridged.add(r);
+        const k = tr[r], u = f.uncol[q];
+        k.br ??= { t0: k.lt, x: k.x, y: k.y, vx: k.vx, vy: k.vy, lt: k.lt, seen: true, o1: off(k, f.t, u), cells: [] }; // 시작 치우침 = 첫 덩어리 − 놓치기 전 트랙에서 간 자리
+        take(k.br, u, f.t); k.br.cells.push([i, u[0], u[1], q]);
+      }
+    }
     tr.forEach((k, r) => {
       if (!ok.has(r) && !got.has(r)) k.chain = null; // 이어지지 않으면 처음부터
+      if (k.br && ok.has(r)) { // 색으로 다시 잡음: 틈이 fillGap보다 길고(짧은 틈은 예전처럼 직선 잇기) 다시 잡은 자리가 이은 끝의 예측 가까이면 이은 칸을 채움
+        const b = k.br, e = ahead(b, f.t);
+        if (b.cells.length > C.fillGap && Math.hypot(k.x - e.x, k.y - e.y) <= C.bridgeTol) {
+          const o2 = off(b, f.t, [k.x, k.y]).map(v => -v), t1 = frames[b.cells[0][0]].t; // 끝 치우침 = 이은 끝에서 간 자리 − 다시 잡은 자리
+          for (const [c, x, y, q] of b.cells) {
+            const a = (frames[c].t - t1) / (f.t - t1); // 첫 이은 칸 0 → 다시 잡은 장면 1 (시각 비례)
+            pos[r][2 * c] = x - (b.o1[0] + (o2[0] - b.o1[0]) * a); pos[r][2 * c + 1] = y - (b.o1[1] + (o2[1] - b.o1[1]) * a); hid[r][c] = 0;
+            (used[c] ??= new Set()).add(q);
+          }
+        }
+      }
+      if (k.br && !bridged.has(r)) k.br = null; // 다시 잡힘(채웠든 안 채웠든)·끊김(맞는 덩어리 없음·bridgeLen 넘음·가장자리 다시 잡기 중): 잇는 길은 버림
       pos[r][2 * i] = k.x; pos[r][2 * i + 1] = k.y; hid[r][i] = ok.has(r) ? 0 : 1; k.seen = ok.has(r); // 가려지면 마지막 위치 유지
     });
   }
 }
 
 /** 고정 인원 추적. 인원이 다 보이는 첫 장면에서 시작해 앞뒤로 따라간다.
- * opts.engine: 'classical-v1'(기본, 마지막 위치로 매칭) 또는 'classical-v2'(등속 예측·속도 상한·가장자리 확인, opts.court [L,W] 필요) */
+ * opts.engine: 'classical-v1'(기본, 마지막 위치로 매칭) 또는 'classical-v2'(등속 예측·속도 상한·가장자리 확인·나누기·색 놓친 아이 잇기, opts.court [L,W] 필요) */
 export function trackPlayers(frames, counts, { engine = 'classical-v1', court, names } = {}) {
   const N = frames.length, v2 = engine === 'classical-v2';
   if (v2 && !(Array.isArray(court) && court[0] > 0 && court[1] > 0)) throw new Error('classical-v2 추적에는 코트 크기가 필요해요');
@@ -223,7 +272,10 @@ export function trackPlayers(frames, counts, { engine = 'classical-v1', court, n
     if (start < 0) throw new Error('선수가 모두 보이는 장면이 없어요. 팀 색을 다시 골라 주세요.');
     starts = counts.map((_, t) => ({ s: start, init: sorted(frames[start].players[t]) }));
   }
-  const run = v2 ? (fr, team, init, idxs, pos, hid) => runTeamV2(fr, team, init, idxs, pos, hid, court) : runTeam;
+  // v2: 팀마다 아이 한 명 몸 넓이 = 팀 검출이 하나만 든 움직임 덩어리 넓이(검출 kidFg)의 영상 전체 중앙값. 기록이 없으면(예전 검출) 0 = 잇지 않음
+  const kid = v2 ? counts.map((_, t) => { const a = frames.flatMap(f => f.kidFg?.[t] ?? []).sort((x, y) => x - y); return a.length ? a[a.length >> 1] : 0; }) : null;
+  const used = []; // v2 잇기: 장면마다 이미 이은 덩어리 번호 (팀 순서대로 돌므로 앞 팀이 이은 덩어리는 뒤 팀이 쓰지 않음)
+  const run = v2 ? (fr, team, init, idxs, pos, hid) => runTeamV2(fr, team, init, idxs, pos, hid, court, kid[team], used) : runTeam;
   const players = [];
   counts.forEach((c, team) => {
     const { s: start, init } = starts[team];

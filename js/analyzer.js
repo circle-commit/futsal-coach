@@ -81,7 +81,7 @@ export async function runAnalysis(video, cfg, bg, { onProgress, signal } = {}) {
   workers.forEach(w => {
     w.onmessage = ({ data: m }) => {
       if (m.type === 'error') return fail(new Error(m.message));
-      dets.push({ t: m.t, players: m.players, ball: m.ball, ...(m.split ? { split: m.split } : {}) }); // split: v2 나누기 후보
+      dets.push({ t: m.t, players: m.players, ball: m.ball, ...(m.split ? { split: m.split } : {}), ...(m.uncol ? { uncol: m.uncol, kidFg: m.kidFg } : {}) }); // v2: 나누기 후보·색 없는 덩어리 (도구의 검출 줄과 같은 값)
       pending--; wake?.();
     };
     w.onerror = e => fail(new Error(e.message || '분석 중 오류'));

@@ -14,6 +14,8 @@
 //     IDF1: 영상 전체에서 정답 아이 ↔ 결과 번호를 하나로 고정해 짝지었을 때(1.0m 안 칸 수가 가장 많게)의 F1
 //     놓침(FN)·헛검출(FP): 칸마다 짝 없는 정답 아이·결과 선수 수의 합.
 //       놓침은 색 놓침 구간(정답 loss)·가장자리(경계에서 1m 안이거나 밖)·그 밖으로, 헛검출은 선수 아닌 사람(정답 extras) 1m 안·가장자리·그 밖으로 나눠 센다
+//     어른 쪽 칸(nearExtra): 짝지은 칸(1.0m 안) 중 결과 자리가 짝 정답 아이보다 선수 아닌 사람(extras)에 더 가까운 칸. 1m 안이라 놓침·헛검출로는
+//       안 잡히는 '옆 어른을 따라간 자리'(색 놓친 아이 잇기 위험)를 센다
 //     위치 오차: 칸마다 짝지은 쌍의 거리 중앙값·95%
 //     뛴 거리 오차 %, 최고 속도 차(km/h), 질주 횟수 차: IDF1 짝(정답 아이 → 결과 선수)의 결과 통계 vs 정답 경로 통계.
 //       정답 통계 = 정답 경로에 앱과 같은 정의 적용: 거리 = 0.1초 칸 사이 거리 합, 최고 속도 = 1초 평균 속도의 최대,
@@ -87,7 +89,7 @@ export function evaluate(doc, truth, { gate = 1.0, ballGate = 0.75, ownerGate = 
 
   // ----- 칸마다 매칭: 놓침·헛검출·번호 바뀜·위치 오차, IDF1용 함께 있던 칸 수 -----
   let fn = 0, fp = 0, gtN = 0, hypN = 0;
-  const why = { fnLoss: 0, fnEdge: 0, fnOther: 0, fpExtra: 0, fpEdge: 0, fpOther: 0 }, [CL, CW] = truth.court;
+  const why = { fnLoss: 0, fnEdge: 0, fnOther: 0, fpExtra: 0, fpEdge: 0, fpOther: 0, nearExtra: 0 }, [CL, CW] = truth.court;
   const nearEdge = ([x, y]) => x < 1 || y < 1 || x > CL - 1 || y > CW - 1; // 경계에서 1m 안이거나 밖
   const inLoss = (g, t) => (G[g].loss || []).some(([a, b]) => t >= a && t < b);
   const errs = [], last = new Array(G.length).fill(-1), switches = [], co = G.map(() => new Float64Array(P.length)), matches = [];
@@ -102,6 +104,7 @@ export function evaluate(doc, truth, { gate = 1.0, ballGate = 0.75, ownerGate = 
       const c = asg[r];
       if (c < 0 || cost[r][c] >= BIG) { fn++; why[inLoss(g, t) ? 'fnLoss' : nearEdge(a) ? 'fnEdge' : 'fnOther']++; return; }
       const h = hs[c][0]; used.add(c); errs.push(cost[r][c]); matches.push([g, h]);
+      const b = hs[c][1]; if ((truth.extras || []).some(e => Math.hypot(e.path[2 * i] - b[0], e.path[2 * i + 1] - b[1]) < cost[r][c])) why.nearExtra++; // 옆 어른 쪽에 붙은 짝
       if (last[g] >= 0 && last[g] !== h) switches.push({ kid: g, t: +t.toFixed(1), from: last[g], to: h });
       last[g] = h;
     });
@@ -178,9 +181,9 @@ export function evaluate(doc, truth, { gate = 1.0, ballGate = 0.75, ownerGate = 
 const f = (v, d = 1) => (v == null || !Number.isFinite(v) ? '–' : v.toFixed(d));
 const pr = e => `${f(e.precision == null ? null : e.precision * 100, 0)}/${f(e.recall == null ? null : e.recall * 100, 0)} (${e.tp}/${e.result}·${e.truth})`;
 export function formatTable(rows) {
-  const head = ['장면', '팀 인원 정답→결과', '번호바뀜', '번호 틀린 칸 (%)', 'IDF1', '놓침 칸 (색놓침/가장자리/기타)', '헛검출 칸 (관중/가장자리/기타)', '위치오차 중앙/95% m', '거리오차 평균/최대 %', '최고속도차 평균/최대 km/h', '질주차 합', '공(보일때) 맞음/틀림/놓침 %', '공가진아이 일치 %', '패스 정밀/재현 %', '뺏김 정밀/재현 %', '분석 s'];
+  const head = ['장면', '팀 인원 정답→결과', '번호바뀜', '번호 틀린 칸 (%)', 'IDF1', '놓침 칸 (색놓침/가장자리/기타)', '헛검출 칸 (관중/가장자리/기타)', '어른 쪽 칸', '위치오차 중앙/95% m', '거리오차 평균/최대 %', '최고속도차 평균/최대 km/h', '질주차 합', '공(보일때) 맞음/틀림/놓침 %', '공가진아이 일치 %', '패스 정밀/재현 %', '뺏김 정밀/재현 %', '분석 s'];
   const body = rows.map(m => m.error ? [m.scene, `결과 없음: ${m.error}`] : [
-    m.scene, `${m.counts.truth.join('/')}→${m.counts.result ? m.counts.result.join('/') : '–'}`, String(m.ids.switches), `${m.ids.wrongIdCells} (${f(m.ids.wrongIdPct)})`, f(m.ids.idf1, 3), `${m.ids.fn} (${m.ids.fnLoss}/${m.ids.fnEdge}/${m.ids.fnOther})`, `${m.ids.fp} (${m.ids.fpExtra}/${m.ids.fpEdge}/${m.ids.fpOther})`,
+    m.scene, `${m.counts.truth.join('/')}→${m.counts.result ? m.counts.result.join('/') : '–'}`, String(m.ids.switches), `${m.ids.wrongIdCells} (${f(m.ids.wrongIdPct)})`, f(m.ids.idf1, 3), `${m.ids.fn} (${m.ids.fnLoss}/${m.ids.fnEdge}/${m.ids.fnOther})`, `${m.ids.fp} (${m.ids.fpExtra}/${m.ids.fpEdge}/${m.ids.fpOther})`, String(m.ids.nearExtra ?? 0),
     `${f(m.position.median, 2)}/${f(m.position.p95, 2)}`, `${f(m.stats.distErrPctMeanAbs)}/${f(m.stats.distErrPctMaxAbs)}`,
     `${f(m.stats.topSpeedDiffMeanAbsKmh)}/${f(m.stats.topSpeedDiffMaxAbsKmh)}`, String(m.stats.sprintDiffAbsSum),
     `${f(m.ball.visible.okPct, 0)}/${f(m.ball.visible.wrongPct, 0)}/${f(m.ball.visible.missPct, 0)}`,
@@ -191,7 +194,7 @@ export function formatTable(rows) {
 
 /** 같은 영상의 두 결과(A·B)를 나란히: 'A → B' */
 export function formatCompare(pairs, [la, lb]) {
-  const cols = [['팀 인원', m => (m.counts.result ? m.counts.result.join('/') : null), null], ['IDF1', m => m.ids.idf1, 3], ['번호바뀜', m => m.ids.switches, 0], ['번호 틀린 %', m => m.ids.wrongIdPct, 1], ['놓침 칸', m => m.ids.fn, 0], ['헛검출 칸', m => m.ids.fp, 0], ['관중 헛검출', m => m.ids.fpExtra, 0],
+  const cols = [['팀 인원', m => (m.counts.result ? m.counts.result.join('/') : null), null], ['IDF1', m => m.ids.idf1, 3], ['번호바뀜', m => m.ids.switches, 0], ['번호 틀린 %', m => m.ids.wrongIdPct, 1], ['놓침 칸', m => m.ids.fn, 0], ['헛검출 칸', m => m.ids.fp, 0], ['관중 헛검출', m => m.ids.fpExtra, 0], ['어른 쪽 칸', m => m.ids.nearExtra ?? 0, 0],
     ['위치오차 중앙 m', m => m.position.median, 2], ['거리오차 평균 %', m => m.stats.distErrPctMeanAbs, 1], ['최고속도차 평균 km/h', m => m.stats.topSpeedDiffMeanAbsKmh, 1], ['질주차 합', m => m.stats.sprintDiffAbsSum, 0],
     ['공 맞음 %', m => m.ball.visible.okPct, 0], ['공가진아이 %', m => m.owner.agreePct, 0], ['패스 재현 %', m => (m.passes.recall == null ? null : m.passes.recall * 100), 0], ['뺏김 재현 %', m => (m.turnovers.recall == null ? null : m.turnovers.recall * 100), 0]];
   const head = ['장면', ...cols.map(c => `${c[0]} (${la} → ${lb})`)];

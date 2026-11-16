@@ -233,19 +233,22 @@ export function bodySizes(frames, cfg) {
 
 /** 한 프레임에서 팀별 선수 위치와 공 후보(px)를 찾는다.
  * cfg: { bg, roi, w, h, thr, openR, joinR, minPx, teams:[{hue:[lo,hi], sat:[lo,hi]}], ball:{minA, maxA}, bodyPx? }
- * cfg.bodyPx(팀별 몸 크기, classical-v2)가 있으면 붙은 덩어리 나누기 후보 split도 낸다. players는 그것과 상관없이 늘 같다 */
+ * cfg.bodyPx(팀별 몸 크기, classical-v2)가 있으면 v2 검출(검출 버전 3)로 붙은 덩어리 나누기 후보 split(있을 때만)과
+ * 색 없는 움직임 덩어리 uncol·아이 한 명 몸덩어리 넓이 kidFg(bodyBlobs)도 낸다. players·ball은 그것과 상관없이 늘 같다 */
 export function detect(frame, cfg) {
-  const { w, h, teams } = cfg, N = w * h;
+  const { w, h, teams } = cfg, N = w * h, v2 = !!cfg.bodyPx;
   const { fg, white, teamOf, lab: tlab, T, kept } = teamBlobs(frame, cfg);
   const players = teams.map(() => []);
   for (const c of kept) players[c.t].push([c.x, c.y]);
-  const split = cfg.bodyPx ? splitBlobs(kept, teamOf, tlab, T, w, N, cfg.bodyPx) : [];
+  const split = v2 ? splitBlobs(kept, teamOf, tlab, T, w, N, cfg.bodyPx) : [];
+  // 움직임 덩어리(몸): 공 판정과 v2 색 없는 덩어리에 같이 쓴다
+  const body = cfg.ball || v2 ? components(fg, w, h) : null, bodyArea = body ? new Int32Array(body.n + 1) : null;
+  if (body) for (let i = 0; i < N; i++) if (body.lab[i]) bodyArea[body.lab[i]]++;
   const ball = [];
   if (cfg.ball) {
     const { lab, n } = components(white, w, h);
     // 흰 점이 아이 몸(다리)과 이어진 덩어리면 양말·신발이거나 발밑 공, 따로 떨어져 있으면 굴러가는 공
-    const body = components(fg, w, h), bodyArea = new Int32Array(body.n + 1), first = new Int32Array(n + 1).fill(-1);
-    for (let i = 0; i < N; i++) if (body.lab[i]) bodyArea[body.lab[i]]++;
+    const first = new Int32Array(n + 1).fill(-1);
     const cnt = new Float64Array(n + 1), sx = new Float64Array(n + 1), sy = new Float64Array(n + 1);
     const x0 = new Float64Array(n + 1).fill(1e9), x1 = new Float64Array(n + 1).fill(-1), y0 = new Float64Array(n + 1).fill(1e9), y1 = new Float64Array(n + 1).fill(-1);
     for (let i = 0; i < N; i++) {
@@ -263,7 +266,23 @@ export function detect(frame, cfg) {
       ball.push([sx[l] / cnt[l], sy[l] / cnt[l], bodyArea[body.lab[first[l]]] < 3 * cnt[l] ? 1 : 0]); // 셋째 값: 1 = 혼자 떨어진 공
     }
   }
-  return split.length ? { players, ball, split } : { players, ball }; // 후보가 없으면 예전과 같은 모양
+  if (!v2) return { players, ball }; // v1: 예전과 같은 모양
+  return { players, ball, ...(split.length ? { split } : {}), ...bodyBlobs(body, bodyArea, teamOf, kept, T, w, N, cfg.minPx) };
+}
+
+// 조끼 색을 잠깐 놓친 아이 잇기용 (classical-v2, 검출 버전 3. 쓰는 규칙은 track.js TRACK_V2 bridge…)
+// uncol: 조끼 색 픽셀이 minPx(팀 검출 최소 크기)보다 적은 움직임 덩어리 [[x, y, 넓이px], …] (덩어리 번호 순, 넓이 0.3×minPx 미만 잡티는 뺌)
+// kidFg: 팀 검출이 딱 하나 든 움직임 덩어리의 넓이 (팀마다 [넓이px, …]). 추적이 영상 전체 중앙값을 그 팀 "아이 한 명 몸 넓이"로 쓴다
+function bodyBlobs(body, area, teamOf, kept, T, w, N, minPx) {
+  const n = body.n, colored = new Int32Array(n + 1), sx = new Float64Array(n + 1), sy = new Float64Array(n + 1);
+  for (let i = 0; i < N; i++) { const l = body.lab[i]; if (!l) continue; sx[l] += i % w; sy[l] += (i / w) | 0; if (teamOf[i] >= 0) colored[l]++; }
+  const uncol = [];
+  for (let l = 1; l <= n; l++) if (area[l] >= 0.3 * minPx && colored[l] < minPx) uncol.push([sx[l] / area[l], sy[l] / area[l], area[l]]);
+  const per = new Map(); // 움직임 덩어리 → 그 안에 중심이 있는 팀 검출들의 팀
+  for (const c of kept) { const l = body.lab[Math.round(c.y) * w + Math.round(c.x)]; if (l) per.set(l, [...(per.get(l) || []), c.t]); }
+  const kidFg = Array.from({ length: T }, () => []);
+  for (const [l, ts] of per) if (ts.length === 1) kidFg[ts[0]].push(area[l]);
+  return { uncol, kidFg };
 }
 
 function nearWhite(bg, w, h, cx, cy, r) {

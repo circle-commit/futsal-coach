@@ -80,11 +80,52 @@ test('잡동사니 장면: 기존 장면과 아이·공·패스는 같고, 조�
 });
 
 test('추가 장면 bigkid·bigkid-early(공식표 밖): 파랑 3번 몸 반지름 0.31m(넓이 약 1.9배), 파랑 2번 4~10초(early는 0~6초) 색 놓침, 아이끼리 2m 넘게 떨어짐(나누면 한 사람을 둘로 나눈 것)', () => {
-  assert.deepEqual(EXTRA_SCENES, ['bigkid', 'bigkid-early']); assert.ok(EXTRA_SCENES.every(s => !ALL_SCENES.includes(s)));
+  assert.deepEqual(EXTRA_SCENES, ['bigkid', 'bigkid-early', 'colorloss-escort', 'colorloss-escort-clutter', 'colorloss-swerve', 'colorloss-sidestep']); assert.ok(EXTRA_SCENES.every(s => !ALL_SCENES.includes(s)));
   const early = makeTruth('bigkid-early'); assert.deepEqual(early.kids[1].loss, [[0, 6]]); assert.equal(early.kids[2].bodyRadius, 0.31); // 팀이 처음부터 모자람
   const t = makeTruth('bigkid');
   assert.deepEqual(makeTruth('bigkid'), t); assert.equal(t.kids[2].bodyRadius, 0.31); assert.deepEqual(t.kids[1].loss, [[4, 10]]); assert.equal(makeJob('bigkid').sourceName, 'bigkid.mp4');
   for (let i = 0; i < 200; i++) for (let a = 0; a < 9; a++) for (let b = a + 1; b < 9; b++) assert.ok(dist(t.kids[a], t.kids[b], i) > 2, `${a}-${b} ${i / 10}초`);
+});
+
+test('추가 장면 colorloss-escort(공식표 밖): 색 놓친 아이 옆을 조끼 없는 어른이 나란히 달림(0.55m·0.40m·끝에 1.25m로 떨어짐), 다른 아이는 1.5m 넘게 떨어짐. 평가기는 옆 어른 쪽 자리를 어른 쪽 칸으로 셈', () => {
+  const t = makeTruth('colorloss-escort'), c = makeTruth('colorloss-escort-clutter'), [L, W] = COURT, outBy = ([x, y]) => Math.max(-x, -y, x - L, y - W);
+  assert.deepEqual(makeTruth('colorloss-escort'), t); assert.deepEqual(c.kids, t.kids); assert.deepEqual(c.extras, t.extras); assert.ok(c.clutter?.shadows); assert.equal('clutter' in t, false);
+  assert.deepEqual(t.kids.filter(k => k.loss).map(k => [k.id, k.loss]), [[1, [[3.5, 4.9]]], [4, [[9.5, 10.9]]], [7, [[15.4, 16.9]]]]); assert.equal(t.extras.length, 3);
+  for (const [k, e, gap, until] of [[1, 0, 0.55, 5.4], [4, 1, 0.4, 11.4], [7, 2, 0.55, 16.4]]) {
+    const kid = t.kids[k], ad = t.extras[e], [t0, t1] = kid.loss[0];
+    assert.ok(t1 - t0 <= 1.5 + 1e-9, `${kid.label} 색 놓침 1.5초 이하`);
+    for (const i of win(t0 - 1, until)) assert.ok(Math.abs(dist(kid, ad, i) - gap) < 0.01, `${kid.label} ${i / 10}초 어른 간격 ${dist(kid, ad, i)}`);
+    for (const i of win(t0 - 1, t1 + 0.5)) {
+      assert.ok(outBy(at(ad, i)) < 0, `${ad.label} ${i / 10}초 코트 안`);
+      for (let j = 0; j < 9; j++) if (j !== k) { assert.ok(dist(kid, t.kids[j], i) > 1.5, `${kid.label}-${j}`); assert.ok(dist(ad, t.kids[j], i) > 1.5, `${ad.label}-${j}`); }
+    }
+  }
+  assert.ok(Math.abs(dist(t.kids[7], t.extras[2], 169) - 1.25) < 0.02); // 색이 돌아오는 16.9초에는 1.25m 떨어짐
+  // 색 놓친 1.4초 동안 결과 자리를 옆 어른 자리(0.55m)로 바꿔도 1m 안이라 놓침·헛검출은 0 → 어른 쪽 칸으로만 드러남
+  const R = perfect(t);
+  for (const i of win(3.5, 4.8)) { R.players[1].path[2 * i] = t.extras[0].path[2 * i]; R.players[1].path[2 * i + 1] = t.extras[0].path[2 * i + 1]; }
+  const m = evaluate(R, t);
+  assert.equal(m.ids.fn, 0); assert.equal(m.ids.fp, 0); assert.equal(m.ids.fpExtra, 0); assert.equal(m.ids.nearExtra, 14); assert.equal(evaluate(perfect(t), t).ids.nearExtra, 0);
+});
+
+test('추가 장면 colorloss-swerve·colorloss-sidestep(공식표 밖, 치우침 보정 약점): 옆 어른 간격이 틈 가운데에서만 바뀜 / 어른 없이 아이가 틈 첫·끝 장면에서 0.3초에 0.4m 옆걸음', () => {
+  const w = makeTruth('colorloss-swerve'), s = makeTruth('colorloss-sidestep'), [L, W] = COURT, outBy = ([x, y]) => Math.max(-x, -y, x - L, y - W);
+  assert.deepEqual(makeTruth('colorloss-swerve'), w); assert.deepEqual(makeTruth('colorloss-sidestep'), s);
+  assert.deepEqual(w.kids.filter(k => k.loss).map(k => [k.id, k.loss]), [[1, [[3.5, 4.9]]], [2, [[15.4, 16.9]]], [4, [[9.5, 10.9]]]]); assert.equal(w.extras.length, 3);
+  for (const [k, e, gaps] of [[1, 0, [[3.5, 0.55], [3.7, 0.55], [4.2, 1.15], [4.7, 0.55], [4.9, 0.55]]], [4, 1, [[9.5, 0.55], [9.7, 0.55], [10.2, 0.3], [10.7, 0.55], [10.9, 0.55]]], [2, 2, [[15.4, 0.55], [15.9, 0.55], [16.4, 0.3], [16.9, 0.55]]]]) {
+    const kid = w.kids[k], ad = w.extras[e], [t0, t1] = kid.loss[0];
+    for (const [t, g] of gaps) assert.ok(Math.abs(dist(kid, ad, Math.round(t * 10)) - g) < 0.01, `${kid.label} ${t}초 어른 간격 ${dist(kid, ad, Math.round(t * 10))}`);
+    for (const i of win(t0 - 1, t1 + 0.5)) {
+      assert.ok(outBy(at(ad, i)) < 0, `${ad.label} ${i / 10}초 코트 안`);
+      for (let j = 0; j < 9; j++) if (j !== k) { assert.ok(dist(kid, w.kids[j], i) > 1.4, `${kid.label}-${j}`); assert.ok(dist(ad, w.kids[j], i) > 1.4, `${ad.label}-${j}`); }
+    }
+  }
+  assert.deepEqual(s.kids.filter(k => k.loss).map(k => [k.id, k.loss]), [[4, [[9.5, 10.9]]], [6, [[3.5, 4.9]]], [7, [[15.4, 16.9]]]]); assert.equal(s.extras.length, 0);
+  const y = (k, t) => s.kids[k].path[2 * Math.round(t * 10) + 1], near = (a, b, e = 0.002) => Math.abs(a - b) < e;
+  assert.ok(near(y(6, 3.4), 4.0) && near(y(6, 3.5), 4.104) && near(y(6, 3.7), 4.4), '분홍 1: 마지막 색 장면(3.4초)부터 옆걸음, 틈 첫 장면에 10cm');
+  assert.ok(near(y(4, 10.6), 9.5) && near(y(4, 10.8), 9.204) && near(y(4, 10.9), 9.1), '보라 2: 색이 돌아오는 장면(10.9초)까지 옆걸음');
+  assert.ok(near(y(7, 15.3), 4.0) && near(y(7, 15.6), 4.4) && near(y(7, 16.6), 4.4) && near(y(7, 16.9), 4.0), '분홍 2: 시작·끝 둘 다');
+  for (const k of [4, 6, 7]) { const [t0, t1] = s.kids[k].loss[0]; for (const i of win(t0 - 1, t1 + 0.5)) for (let j = 0; j < 9; j++) if (j !== k) assert.ok(dist(s.kids[k], s.kids[j], i) > 1.5, `${s.kids[k].label}-${j}`); }
 });
 
 test('평가기: 정답 그대로인 결과는 번호 바뀜 0·IDF1 1·놓침/헛검출 0·오차 0·공 다 맞음·패스 다 맞음 (RESULT로 감싸도 같음)', () => {

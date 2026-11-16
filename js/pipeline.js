@@ -19,8 +19,9 @@ export function setup(cfg, bg) {
     ball: { minA: Math.max(4, 0.3 * ballA), maxA: 6 * ballA }, // 압축 영상에선 공이 번져서 커 보임
   };
   const m = list => list.map(([x, y, ...rest]) => [...applyH(Hm, x, y), ...rest]);
-  // 나누기 후보(split, v2 검출에만)도 m로. 없으면 예전과 같은 모양
-  const toMeters = d => (d.split ? { players: d.players.map(m), ball: m(d.ball), split: d.split.map(([t, j, parts]) => [t, j, m(parts)]) } : { players: d.players.map(m), ball: m(d.ball) });
+  // v2 검출(검출 버전 3)의 나누기 후보 split·색 없는 덩어리 uncol도 m로 (넓이 px·kidFg는 그대로). v1은 예전과 같은 모양
+  const toMeters = d => ({ players: d.players.map(m), ball: m(d.ball), ...(d.split ? { split: d.split.map(([t, j, parts]) => [t, j, m(parts)]) } : {}),
+    ...(d.uncol ? { uncol: m(d.uncol), kidFg: d.kidFg } : {}) });
   return { ppm, det, Hm, Hp, toMeters };
 }
 
@@ -30,7 +31,8 @@ export const teamGate = t => ({ hue: t.hue, sat: t.sat, mid: t.mid ?? [t.hue[0] 
 const r2 = a => Array.from(a, v => (Number.isNaN(v) ? null : Math.round(v * 100) / 100));
 
 /** 분석 방식(엔진). 기본은 v2(브라우저 분석·로컬 도구 모두). v1은 비교용으로 남김.
- * v2는 추적만 다르다: 등속 예측 매칭·속도 상한·가장자리 확인·관중 뺀 인원 세기·짧은 틈 잇기 (track.js TRACK_V2) */
+ * v2: 등속 예측 매칭·속도 상한·가장자리 확인·관중 뺀 인원 세기·짧은 틈 잇기·붙은 덩어리 나누기·조끼 색을 잠깐 놓친 아이 잇기 (track.js TRACK_V2).
+ * 검출도 더 낸다(vision.detect의 split·uncol·kidFg, 검출 버전 3) */
 export const ENGINES = Object.freeze(['classical-v1', 'classical-v2']);
 export const DEFAULT_ENGINE = 'classical-v2';
 
@@ -39,7 +41,8 @@ export function analyzeFrames(dets, cfg, { engine = DEFAULT_ENGINE } = {}) {
   if (!ENGINES.includes(engine)) throw new Error(`모르는 분석 방식이에요: ${engine}`);
   // 선생님이 적은 인원이 있으면 그걸로. v2는 코트 선 밖 0.75m 넘는 검출(관중·코치)은 세지 않음
   const counts = rosterCounts(engine === 'classical-v2' ? inPlayFrames(dets, cfg.court) : dets, cfg.teams.length).map((c, t) => cfg.teams[t].count || c);
-  // v2: 붙은 덩어리 나누기 후보(split)는 추적 안에서 "아이가 붙어서 하나로 보인 경우"에만 쓴다 (track.js TRACK_V2 splitNear·bigShare). 인원은 나누기 전 검출로 셈
+  // v2: 붙은 덩어리 나누기 후보(split)는 추적 안에서 "아이가 붙어서 하나로 보인 경우"에만 쓴다 (track.js TRACK_V2 splitNear·bigShare). 인원은 나누기 전 검출로 셈.
+  //     색 없는 덩어리(uncol)도 추적 안에서 조끼 색을 잠깐 놓친 아이를 이을 때만 쓴다 (TRACK_V2 bridge…, 색으로 다시 잡혀야 남김)
   const tracked = trackPlayers(dets, counts, { engine, court: cfg.court, names: cfg.teams.map(t => t.name) }); // 이름은 오류 안내용
   const times = dets.map(d => d.t);
   const ballRaw = trackBall(dets);

@@ -14,9 +14,11 @@ import { medianBackground, detect, bodySizes } from '../js/vision.js';
 import { validateAnalysisConfig, parseAnalysisJob, parseAnalysisFile, RESULT_APP, FILE_VERSION } from '../js/analysis-file.js';
 
 export const TOOL_VERSION = 1;
-// 검출 기록 버전: classical-v2 검출은 붙은 덩어리 나누기 후보(split)가 들어가 2. v1 검출은 예전 그대로(1)라 예전 v1 중간 저장도 이어 할 수 있다
-export const DETECT_VERSION = 2;
+// 검출 기록 버전 (classical-v2): 2 = 붙은 덩어리 나누기 후보(split) 추가, 3 = 색 없는 움직임 덩어리(uncol)·아이 한 명 몸덩어리 넓이(kidFg) 추가
+// (조끼 색을 잠깐 놓친 아이 잇기). 버전이 다른 v2 중간 저장은 섞지 않고 안내 후 거절. v1 검출은 예전 그대로(1)라 예전 v1 중간 저장도 이어 할 수 있다
+export const DETECT_VERSION = 3;
 const detectVersionOf = engine => (engine === 'classical-v1' ? 1 : DETECT_VERSION);
+const DETECT_BEFORE = { 1: '붙은 덩어리 나누기를 넣기 전', 2: '조끼 색을 잠깐 놓친 아이 잇기를 넣기 전' }; // 예전 v2 검출 기록 버전마다 빠진 것 (거절 안내용)
 export const FPS = Math.round(1 / DT); // 10 (결과 격자와 같음)
 export const BG_FRAMES = 30;
 const FLUSH_EVERY = 50; // 검출 50장(영상 5초)마다 중간 저장
@@ -37,7 +39,8 @@ export const USAGE = `풋살 코치 로컬 분석 (영상은 이 컴퓨터에서
   결과 파일      분석이 끝나면 생겨요. 웹 홈의 '분석 결과 가져오기'로 넣으면 수업 기록이 돼요.
   --engine 이름  분석 방식: classical-v2(기본, 브라우저 분석과 같음: 움직임을 예측해 따라가고, 가려졌던 아이는
                  코트 가장자리·밖 검출을 여러 장면 맞을 때만 다시 잡음. 팀 인원은 선 밖 0.75m 넘는 사람을 빼고 세고,
-                 0.3초 이하로 잠깐 안 보인 아이는 앞뒤를 이어 줌) 또는 classical-v1(예전 방식, 비교용). 결과 파일에 적혀요.
+                 0.3초 이하로 잠깐 안 보인 아이는 앞뒤를 이어 줌. 조끼 색을 잠깐 놓친 아이는 1.5초까지 그 자리의 색 없는
+                 움직임으로 잇되 색으로 다시 잡혀야 남김) 또는 classical-v1(예전 방식, 비교용). 결과 파일에 적혀요.
   --resume       Ctrl+C로 멈췄던 분석을 이어서 해요 (같은 영상·같은 작업 설정일 때만). --engine을 안 주면
                  처음 분석하던 방식으로 이어 해요. 중간 저장은 결과 파일 옆 '<결과 파일>.work' 폴더에 있어요.
 
@@ -168,17 +171,20 @@ export function writeAtomic(file, data) {
   }
 }
 
-// 검출 한 장면: { i, t=i/10, players: 팀마다 [[x,y],…], ball: [[x,y,혼자1/0],…], split?: [[팀, 번호, [[x,y],…2~4개]],…] }
-// 모든 값은 유한한 숫자 (m 좌표). split(v2 나누기 후보)의 번호는 그 팀 players 안의 자리, 같은 자리 두 번은 안 됨
+// 검출 한 장면: { i, t=i/10, players: 팀마다 [[x,y],…], ball: [[x,y,혼자1/0],…], split?: [[팀, 번호, [[x,y],…2~4개]],…],
+//   uncol?: [[x,y,넓이px],…], kidFg?: 팀마다 [넓이px,…] }  (split·uncol·kidFg는 v2 검출. uncol·kidFg는 검출 버전 3부터 늘 함께)
+// 모든 값은 유한한 숫자 (m 좌표, 넓이는 양수). split(v2 나누기 후보)의 번호는 그 팀 players 안의 자리, 같은 자리 두 번은 안 됨
 const finite = v => typeof v === 'number' && Number.isFinite(v);
 const row = (r, len) => Array.isArray(r) && r.length === len && r.every(finite);
 const splitOk = (s, players) => s === undefined || (Array.isArray(s) && s.length > 0 && s.every(e => Array.isArray(e) && e.length === 3
   && Number.isInteger(e[0]) && e[0] >= 0 && e[0] < players.length && Number.isInteger(e[1]) && e[1] >= 0 && e[1] < players[e[0]].length
   && Array.isArray(e[2]) && e[2].length >= 2 && e[2].length <= 4 && e[2].every(r => row(r, 2)))
   && new Set(s.map(e => `${e[0]}:${e[1]}`)).size === s.length);
+const bodyOk = (u, kf, nTeams) => (u === undefined && kf === undefined) || (Array.isArray(u) && u.every(r => row(r, 3) && r[2] > 0)
+  && Array.isArray(kf) && kf.length === nTeams && kf.every(l => Array.isArray(l) && l.every(v => finite(v) && v > 0)));
 export const detectionOk = (d, k, nTeams) => !!d && typeof d === 'object' && d.i === k && d.t === k / FPS
   && Array.isArray(d.players) && d.players.length === nTeams && d.players.every(l => Array.isArray(l) && l.every(r => row(r, 2)))
-  && Array.isArray(d.ball) && d.ball.every(r => row(r, 3) && (r[2] === 0 || r[2] === 1)) && splitOk(d.split, d.players);
+  && Array.isArray(d.ball) && d.ball.every(r => row(r, 3) && (r[2] === 0 || r[2] === 1)) && splitOk(d.split, d.players) && bodyOk(d.uncol, d.kidFg, nTeams);
 
 /** 검출 기록(JSONL)을 읽는다. 쓰다 만 마지막 줄(줄바꿈 없음 또는 깨진 마지막 줄)은 버리고 파일도 거기까지 자른다.
  * 중간 줄이 깨졌거나 값이 이상하면(번호·시각·팀 수·좌표 칸 수·유한한 숫자) 이어 하지 않고 오류 */
@@ -338,7 +344,7 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
     const size = statOf(video).size, videoSha = await sha256File(video);
     if (ac.signal.aborted) throw abortError();
     // 분석 방식도 지문에 넣는다 (v1은 방식이 없던 예전 지문과 같게 → 예전 중간 저장도 이어 할 수 있음). 이어 하면 아래에서 기록의 방식으로 다시 계산
-    // v1이 아니면 검출 기록 버전도 넣어, 덩어리 나누기 전 v2 검출 기록과 섞이지 않게 한다
+    // v1이 아니면 검출 기록 버전도 넣어, 버전이 다른(예전 도구로 만든) v2 검출 기록과 섞이지 않게 한다
     const hashOf = e => sha256(JSON.stringify({ kind, config, fps: FPS, bgFrames: BG_FRAMES, tool: TOOL_VERSION, ...(e !== 'classical-v1' ? { engine: e, detect: detectVersionOf(e) } : {}) }));
     let settingsHash = hashOf(engine);
     const startedAt = new Date().toISOString(), t0 = Date.now();
@@ -348,12 +354,21 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
     let state = null, bg = null, bgCount = 0, dets = [], resumed = false, bodyPx = null; // bodyPx: v2 팀별 몸 크기(나누기 기준)
     if (work) {
       if (statOf(work)) {
-        if (!resume) throw new ToolError(`이 결과 파일의 중간 저장 기록이 있어요 (${work}).\n이어서 하려면 같은 명령 끝에 --resume을 붙여 주세요. 처음부터 다시 하려면 그 폴더를 직접 지운 뒤 실행해 주세요.`, 2);
         // 이 도구의 폴더인지 먼저 읽기만 해서 확인한다 (다른 용도의 폴더·잠금 파일은 일절 건드리지 않게) → 잠금 → 상태를 다시 읽음
         const readState = () => { try { return JSON.parse(fs.readFileSync(path.join(work, STATE), 'utf8')); } catch { return null; } };
         const owned = x => !!x && typeof x === 'object' && x.tool === 'futsal-coach-analyze';
         const notOurs = () => new ToolError(`이 폴더(${work})는 풋살 코치 분석의 중간 저장 기록이 아니거나 기록(state.json)을 읽을 수 없어요. 폴더는 건드리지 않았어요. 결과 파일 이름을 바꿔 실행하거나, 이 도구가 만든 폴더가 맞는지 확인해 주세요.`, 2);
-        if (!owned(readState())) throw notOurs();
+        // 검출 기록 버전이 지금 도구와 다른 중간 저장(기록된 방식 기준)은 어떻게 해도 이어 할 수 없다
+        const oldDetect = st => {
+          const e = st.engine ?? 'classical-v1', got = st.detect ?? 1, need = detectVersionOf(e); // 방식 기록이 없는 예전 중간 저장은 v1
+          if (got === need) return null;
+          const by = got < need ? `${DETECT_BEFORE[got] ?? '예전'} 도구로` : '이 도구보다 새 도구로';
+          return new ToolError(`이 중간 저장은 ${by} 검출한 ${e} 기록이라 이어 할 수 없어요 (검출 기록 버전 ${got}, 지금 도구는 ${need}). 중간 저장 폴더(${work})를 지운 뒤 --resume 없이 다시 실행해 주세요 (검출을 처음부터 다시 해요).`, 2);
+        };
+        const first = readState();
+        if (owned(first) && oldDetect(first)) throw oldDetect(first); // --resume이 없어도 먼저: "--resume을 붙이라" 했다가 붙이면 거절하는 두 번 걸음을 없앰
+        if (!resume) throw new ToolError(`이 결과 파일의 중간 저장 기록이 있어요 (${work}).\n이어서 하려면 같은 명령 끝에 --resume을 붙여 주세요. 처음부터 다시 하려면 그 폴더를 직접 지운 뒤 실행해 주세요.`, 2);
+        if (!owned(first)) throw notOurs();
         release = lockWork(work);
         state = readState(); // 잠금을 잡는 사이 다른 실행이 바꿨을 수 있음
         if (!owned(state)) throw notOurs();
@@ -361,9 +376,7 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
         const was = state.engine ?? 'classical-v1'; // 방식 기록이 없는 예전 중간 저장은 v1
         if (asked && asked !== was) throw new ToolError(`처음 분석하던 방식(${was})과 지금 고른 방식(${asked})이 달라요. 이어 하려면 --engine 없이(또는 --engine ${was}로) 실행하고, 새 방식으로 하려면 중간 저장 폴더를 지운 뒤 --resume 없이 실행해 주세요.`, 2);
         engine = was; settingsHash = hashOf(engine);
-        if ((state.detect ?? 1) !== detectVersionOf(engine)) {
-          throw new ToolError(`이 중간 저장은 붙은 덩어리 나누기를 넣기 전 도구로 검출한 ${engine} 기록이라 이어 할 수 없어요. 중간 저장 폴더(${work})를 지운 뒤 --resume 없이 다시 실행해 주세요 (검출을 처음부터 다시 해요).`, 2);
-        }
+        if (oldDetect(state)) throw oldDetect(state); // 잠그는 사이 바뀌었을 수 있어 다시 봄
         if (state.settingsHash !== settingsHash || state.kind !== kind) throw new ToolError('작업 설정(코트·팀 색 등)이 처음과 달라요. 같은 작업 설정 파일로 실행하거나, 새 설정으로 처음부터 하려면 중간 저장 폴더를 지운 뒤 --resume 없이 실행해 주세요.', 2);
         resumed = true;
         const bp = path.join(work, BG), bs = statOf(bp);
@@ -400,7 +413,7 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
       if (work) { const buf = Buffer.from(bg.buffer, bg.byteOffset, bg.length); writeAtomic(path.join(work, BG), buf); saveState({ stage: 'detect', background: { frames: bgCount, sha256: sha256(buf) }, ...(bodyPx ? { bodyPx } : {}) }); }
     }
     const s = setup(config, bg);
-    if (bodyPx) s.det.bodyPx = bodyPx; // v2: 붙은 덩어리 나누기 후보도 검출
+    if (bodyPx) s.det.bodyPx = bodyPx; // v2: 붙은 덩어리 나누기 후보·색 없는 덩어리·아이 한 명 몸 넓이도 검출 (검출 버전 3)
 
     // ----- 2. 장면마다 검출 (처음부터 순서대로 디코딩, 검출한 장면은 건너뜀) -----
     const skip = dets.length, expected = Math.max(1, Math.round(info.duration * FPS));
@@ -417,7 +430,7 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
       decoded = await decodeFrames({ ffmpeg: b.ffmpeg, W, H, signal: ac.signal, args: ['-i', video, '-map', '0:v:0', '-vf', `fps=${FPS},scale=${W}:${H}`], onFrame: (f, i) => {
         if (i < skip) { if (i % 50 === 0) prog.line(`앞 장면 건너뛰는 중 ${i + 1}/${skip}장`); return; }
         const d = s.toMeters(detect(f, s.det));
-        const line = JSON.stringify({ i, t: i / FPS, players: d.players, ball: d.ball, ...(d.split ? { split: d.split } : {}) }); // split: v2 나누기 후보
+        const line = JSON.stringify({ i, t: i / FPS, players: d.players, ball: d.ball, ...(d.split ? { split: d.split } : {}), ...(d.uncol ? { uncol: d.uncol, kidFg: d.kidFg } : {}) }); // v2: 나누기 후보·색 없는 덩어리
         const back = JSON.parse(line); // 이어 하기와 똑같은 입력이 되게 저장한 글자에서 다시 읽은 값을 쓴다
         if (!detectionOk(back, i, config.teams.length)) throw new ToolError(`${i + 1}번째 장면 검출 값이 숫자가 아니에요 (코트 모서리 설정 문제일 수 있어요). 작업 설정을 다시 만들어 주세요.`, 1);
         dets.push(back);
