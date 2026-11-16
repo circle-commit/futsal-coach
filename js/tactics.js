@@ -1,5 +1,6 @@
 // 전술 지표 (순수 계산): 팀 영역 다각형, 폭·깊이·면적·수비 라인·간격, 누적 거리, 공 점유 팀
 import { possession } from './track.js';
+import { reviewBreakIndices } from './review.js';
 
 /** 볼록 껍질(모노톤 체인). pts: [[x,y],...] → 꼭짓점 배열(반시계) */
 export function convexHull(pts) {
@@ -55,12 +56,17 @@ export function computeTactics(R) {
     metrics[t] = Object.fromEntries(Object.entries(m).map(([k, v]) => [k, smooth(v, 5)])); // 1초 평균
   }
   // 누적 거리: 활동량 계산과 같은 규칙(0.5초 평균 위치, 9m/s 넘는 튐·가려진 순간 제외)
+  // + 검수 교정 경계(review.js reviewBreaks: 칸 j-1 → j가 교정으로 생긴 인위적 연결)는 가짜 이동이라 뺀다.
+  //   가운데 평균(앞뒤 half칸)을 거치면 그 점프가 걸음 j-half..j+half에 퍼지므로 그 걸음들만 0으로 친다.
+  const half = 2;
   const cum = P.map(p => {
-    const xs = smooth(Array.from({ length: N }, (_, i) => p.path[2 * i]), 2), ys = smooth(Array.from({ length: N }, (_, i) => p.path[2 * i + 1]), 2);
+    const xs = smooth(Array.from({ length: N }, (_, i) => p.path[2 * i]), half), ys = smooth(Array.from({ length: N }, (_, i) => p.path[2 * i + 1]), half);
+    const cut = new Uint8Array(N);
+    for (const j of reviewBreakIndices(p, dt)) for (let i = Math.max(1, j - half); i <= Math.min(N - 1, j + half); i++) cut[i] = 1;
     const out = new Float32Array(N);
     for (let i = 1; i < N; i++) {
       let d = Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]);
-      if (d / dt > 9 || p.hidden[i] || p.hidden[i - 1]) d = 0;
+      if (d / dt > 9 || p.hidden[i] || p.hidden[i - 1] || cut[i]) d = 0;
       out[i] = out[i - 1] + d;
     }
     return out;

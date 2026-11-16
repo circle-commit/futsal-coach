@@ -57,17 +57,180 @@ function runTeam(frames, team, init, idxs, pos, hid) {
   }
 }
 
-/** 고정 인원 추적. 인원이 다 보이는 첫 장면에서 시작해 앞뒤로 따라간다. */
-export function trackPlayers(frames, counts) {
-  const N = frames.length;
-  const start = frames.findIndex(f => counts.every((c, t) => f.players[t].length === c));
-  if (start < 0) throw new Error('선수가 모두 보이는 장면이 없어요. 팀 색을 다시 골라 주세요.');
+// ---------- classical-v2 추적: 등속 예측 매칭 + 물리 속도로 잡는 반경 상한 + 가장자리 검출 확인 ----------
+// v1(runTeam)은 그대로 둔다 (브라우저 분석·예전 결과가 바뀌지 않게). 같은 입력이면 늘 같은 출력(난수·시각 없음).
+export const TRACK_V2 = Object.freeze({
+  vmax: 9, // 잡는 반경 상한: 마지막으로 본 자리에서 초속 9m × 지난 시간 + margin (검수 후보 순간 이동 기준과 같은 속도)
+  margin: 0.8, // 검출 중심 떨림·몸 기울기 여유 (m)
+  tau: 0.5, // 예측에 쓰는 속도는 0.5초 시간 상수로 줄어듦: 오래 가려지면 멀리 내다보지 않음
+  alpha: 0.5, // 속도 갱신: 새로 잰 속도와 이전 속도를 반씩
+  vReset: 0.3, // 이보다 오래 못 봤다가 다시 잡으면 속도는 0부터
+  edge: 1.0, // 코트 선 안쪽 1m 이내·코트 밖 = 가장자리 (사이드라인 밖 사람·물체가 잘못 잡히는 곳)
+  tight: 0.8, // 보이던 트랙이 가장자리 검출을 바로 잡으려면 예측 위치에서 이 거리 안이어야 함
+  confirm: 3, // 가려진 트랙은 가장자리 검출이 이 장면 수만큼 이어서 맞아야 다시 잡고, 그 장면들도 채운다
+  pathTol: 1.5, pathSpeed: 3, // 그 검출들은 예측 경로에서 1.5m + 초속 3m(보통 뛰는 속도) × 가려진 시간 안이어야 함 (사이드라인 밖 사람이 멀리서 낚아채지 않게)
+  vHold: 0.5, // 가려진 지 0.5초까지만 예측에 속도를 다 쓰고, 1초가 되면 0으로 줄여 마지막 자리로 본다.
+  //   아이는 0.5~1초면 방향을 바꾸므로 오래된 속도는 믿지 않는다 (오래 뭉쳐 있던 아이의 옛 속도가 옆 아이 검출을 끌어오던 문제)
+  rosterOut: 0.75, // 팀 인원·시작 장면을 셀 때 코트 선 밖 0.75m 넘는 검출은 세지 않음: 선 밖을 따라 뛰는 아이(0.5m 안)와
+  //   조끼 색이 비슷한 관중·코치(대개 선 밖 1m 넘게)의 가운데. 추적 자체는 모든 검출을 보되 가장자리 규칙을 따른다
+  fillGap: 3, fillSpeed: 7, // 앞뒤로 보인 사이의 가려짐이 3장(0.3초) 이하이고 그 사이 속도가 초속 7m(아이 최고 속도 6~7m 바로 위, 순간 이동 기준 9m 아래) 이하면 직선으로 잇는다.
+  //   몸이 겹쳐 잠깐 안 보인 아이도 계속 움직였으므로 (뛴 거리 계산은 가려진 장면 둘레 0.6초를 빼서 짧은 틈마다 거리가 모자랐음).
+  //   더 길거나 빠른 틈은 실제 가림·번호 바뀜일 수 있어 가려짐으로 남겨 검수에서 보이게 한다
+  holdMax: 2, // 다시 잡는 반경(물리 반경·예측 경로 허용)은 가려진 지 2초까지만 커진다(최대 0.8+9×2=18.8m, 경로 1.5+3×2=7.5m).
+  //   그보다 오래 가려진 아이는 거리로는 누구인지 가릴 수 없고 멀리 있는 다른 사람을 잡을 위험만 커지므로, 반경 밖에서 나타나면
+  //   억지로 잇지 않고 가려짐으로 남겨 검수에서 보이게 한다. 가려진 트랙은 선 밖 rosterOut 넘는 검출로는 절대 다시 잡지 않음(시작 규칙과 같게)
+  // 붙은 덩어리 나누기 후보(검출 split)는 "아이가 붙어서 하나로 보인 경우"에만 쓴다 (runTeamV2):
+  //   ① 그 팀이 인원보다 적게 보이고 나눠도 인원을 넘지 않으며, ② 그 덩어리를 이어 온 트랙(직전 장면에 보였고 예측 자리가 나눈 자리 하나에서
+  //   splitNear 안)이 있고, ③ 그 트랙이 "혼자서도 덩어리가 큰 사람"이 아닐 때. 덩어리 크기는 팀 몸 크기(중앙값)와 비교하므로 몸 큰 사람은
+  //   혼자서도 늘 후보가 나온다. 그래서 팀 전원이 따로 보인 장면(붙은 아이가 있을 수 없음)에서 그 트랙 덩어리에 후보가 나온 비율이 bigShare 이상이면
+  //   몸 큰 사람으로 보고, 그 사람 덩어리는 나누지 않는다(다른 아이를 놓쳐 팀이 모자랄 때 큰 사람을 둘로 나눠 빈 번호를 채우던 문제)
+  splitNear: 1.0, // 붙은 두 아이 중심은 0.75m 안(몸 반지름 0.225m×2 + 조끼 조각 묶는 거리)이라 나눈 자리는 각 아이 자리 근처. 예측 떨림 여유를 더해 1m
+  bigShare: 0.25, // 혼자 보일 때 4장 중 1장 넘게 후보가 나오면 그 사람 자체가 큼 (보통 아이는 거의 0: 자세로 1.6배를 넘는 일은 드묾). 낮게 잡아 애매하면 안 나눔
+});
+
+const outsideOf = (d, [L, W]) => Math.max(0, -d[0], d[0] - L, -d[1], d[1] - W); // 코트 선 밖으로 나간 거리 (안이면 0)
+
+/** 코트 가까이(선 밖 rosterOut 이내)의 검출만 남긴 장면들 (classical-v2의 인원 세기·시작 장면용) */
+export function inPlayFrames(frames, court, lim = TRACK_V2.rosterOut) {
+  return frames.map(f => ({ ...f, players: f.players.map(l => l.filter(d => outsideOf(d, court) <= lim)) }));
+}
+
+// 짧은 틈 메우기 (classical-v2): 위 fillGap·fillSpeed 조건이면 직선으로 잇고 보인 것으로 한다
+function fillGaps(pos, hid, frames, C) {
+  const N = hid.length;
+  for (let k = 0; k < N;) {
+    if (!hid[k]) { k++; continue; }
+    let e = k; while (e + 1 < N && hid[e + 1]) e++;
+    const a = k - 1, b = e + 1;
+    if (a >= 0 && b < N && e - k + 1 <= C.fillGap) {
+      const dt = frames[b].t - frames[a].t, d = Math.hypot(pos[2 * b] - pos[2 * a], pos[2 * b + 1] - pos[2 * a + 1]);
+      if (dt > 0 && d / dt <= C.fillSpeed) {
+        for (let j = k; j <= e; j++) {
+          const u = (frames[j].t - frames[a].t) / dt;
+          pos[2 * j] = pos[2 * a] + (pos[2 * b] - pos[2 * a]) * u; pos[2 * j + 1] = pos[2 * a + 1] + (pos[2 * b + 1] - pos[2 * a + 1]) * u; hid[j] = 0;
+        }
+      }
+    }
+    k = e + 1;
+  }
+}
+const FAR = 1e9;
+
+function runTeamV2(frames, team, init, idxs, pos, hid, court) {
+  const C = TRACK_V2, [L, W] = court;
+  const isEdge = d => d[0] < C.edge || d[1] < C.edge || d[0] > L - C.edge || d[1] > W - C.edge;
+  const tr = init.map(([x, y]) => ({ x, y, vx: 0, vy: 0, lt: frames[idxs[0]].t, seen: true, chain: null }));
+  // 검출 d(시각 t)로 트랙 갱신. 속도는 직전 장면에도 보였고 간격이 짧을 때만 새로 잼
+  const take = (k, d, t) => {
+    const dt = Math.abs(t - k.lt);
+    if (k.seen && dt > 0 && dt <= C.vReset) {
+      let vx = C.alpha * ((d[0] - k.x) / dt) + (1 - C.alpha) * k.vx, vy = C.alpha * ((d[1] - k.y) / dt) + (1 - C.alpha) * k.vy;
+      const sp = Math.hypot(vx, vy); if (sp > C.vmax) { vx *= C.vmax / sp; vy *= C.vmax / sp; }
+      k.vx = vx; k.vy = vy;
+    } else { k.vx = 0; k.vy = 0; }
+    k.x = d[0]; k.y = d[1]; k.lt = t;
+  };
+  // 몸 큰 사람 판정 근거 (이 방향으로 지나온 장면만): 팀 전원이 따로 보인 장면에서 트랙 r이 잡은 덩어리 수 / 그 덩어리에 나누기 후보가 있던 수
+  const alone = tr.map(() => 0), bigN = tr.map(() => 0);
+  const isBig = r => alone[r] > 0 && bigN[r] >= C.bigShare * alone[r];
+  for (const i of idxs) {
+    const f = frames[i], raw = f.players[team], ok = new Set(), used = new Set();
+    // 예측 이동량 = 속도 × g(가려진 시간): 처음엔 τ로 줄어들며 늘다가 vHold부터 줄어 2·vHold에서 0 (오래된 속도는 버림)
+    const gOf = dt => C.tau * (1 - Math.exp(-Math.min(dt, C.vHold) / C.tau)) * Math.max(0, 1 - Math.max(0, dt - C.vHold) / C.vHold);
+    const pred = tr.map(k => { const dt = Math.abs(f.t - k.lt), g = gOf(dt); return { x: k.x + k.vx * g, y: k.y + k.vy * g, dt }; });
+    const held = r => Math.min(pred[r].dt, C.holdMax); // 반경이 커지는 시간은 holdMax까지
+    const reach = (k, r, d) => Math.hypot(d[0] - k.x, d[1] - k.y) <= C.margin + C.vmax * held(r);
+    // 붙은 덩어리 나누기 (TRACK_V2 splitNear·bigShare 설명): 덩어리를 이어 온 보이던 트랙이 있고, 그 트랙이 몸 큰 사람이 아닐 때만 나눈 자리를 검출로 쓴다
+    const cands = f.split ? f.split.filter(s => s[0] === team) : [];
+    let det = raw;
+    if (cands.length && raw.length < tr.length) {
+      const use = new Map(); let n = raw.length;
+      for (const [, j, parts] of cands) {
+        const owners = tr.map((_, r) => r).filter(r => tr[r].seen && parts.some(p => Math.hypot(p[0] - pred[r].x, p[1] - pred[r].y) <= C.splitNear));
+        if (!owners.length || owners.some(isBig) || n + parts.length - 1 > tr.length) continue;
+        use.set(j, parts); n += parts.length - 1;
+      }
+      if (use.size) det = raw.flatMap((d, j) => use.get(j) ?? [d]);
+    }
+    if (det.length) {
+      const cost = tr.map((k, r) => det.map(d => {
+        if (!reach(k, r, d)) return FAR; // 물리적으로 못 가는 곳
+        const c = Math.hypot(d[0] - pred[r].x, d[1] - pred[r].y);
+        if (isEdge(d) && (!k.seen || c > C.tight)) return FAR; // 가장자리는 보이던 트랙이 예측 가까이일 때만 바로
+        return c;
+      }));
+      const full = raw.length === tr.length; // 팀 전원이 따로 보임 = 나누기는 안 썼고, 붙은 아이가 있을 수 없는 장면
+      assign(cost).forEach((j, r) => {
+        if (j >= 0 && cost[r][j] < FAR) {
+          take(tr[r], det[j], f.t); tr[r].chain = null; ok.add(r); used.add(j);
+          if (full) { alone[r]++; if (cands.some(s => s[1] === j)) bigN[r]++; }
+        }
+      });
+    }
+    // 못 잡은 트랙: 남은 가장자리 검출이 여러 장면 이어서 맞을 때만 다시 잡는다 (비용·번호 순으로 하나씩, 결정적)
+    const cand = [];
+    tr.forEach((k, r) => {
+      if (ok.has(r)) return;
+      const last = k.chain?.[k.chain.length - 1];
+      det.forEach((d, j) => {
+        if (used.has(j) || !isEdge(d) || outsideOf(d, court) > C.rosterOut || !reach(k, r, d)) return; // 선 밖 멀리(관중·코치)로는 다시 잡지 않음
+        const c = Math.hypot(d[0] - pred[r].x, d[1] - pred[r].y);
+        if (c > C.pathTol + C.pathSpeed * held(r)) return; // 예측 경로와 안 맞음
+        const cont = !!last && Math.hypot(d[0] - last.d[0], d[1] - last.d[1]) <= C.margin + C.vmax * Math.abs(f.t - last.t);
+        cand.push({ r, j, cont, c });
+      });
+    });
+    cand.sort((a, b) => b.cont - a.cont || a.c - b.c || a.r - b.r || a.j - b.j); // 이어지는 줄을 먼저
+    const got = new Set();
+    for (const { r, j, cont } of cand) {
+      if (got.has(r) || used.has(j)) continue;
+      got.add(r); used.add(j);
+      const k = tr[r], d = det[j], chain = cont ? [...k.chain, { i, t: f.t, d }] : [{ i, t: f.t, d }];
+      if (chain.length < C.confirm) { k.chain = chain; continue; }
+      for (const e of chain.slice(0, -1)) { pos[r][2 * e.i] = e.d[0]; pos[r][2 * e.i + 1] = e.d[1]; hid[r][e.i] = 0; } // 확인된 장면들도 채움
+      const c0 = chain[0], dt = Math.abs(f.t - c0.t);
+      k.x = d[0]; k.y = d[1]; k.lt = f.t; k.chain = null; ok.add(r);
+      let vx = dt > 0 ? (d[0] - c0.d[0]) / dt : 0, vy = dt > 0 ? (d[1] - c0.d[1]) / dt : 0;
+      const sp = Math.hypot(vx, vy); if (sp > C.vmax) { vx *= C.vmax / sp; vy *= C.vmax / sp; }
+      k.vx = vx; k.vy = vy;
+    }
+    tr.forEach((k, r) => {
+      if (!ok.has(r) && !got.has(r)) k.chain = null; // 이어지지 않으면 처음부터
+      pos[r][2 * i] = k.x; pos[r][2 * i + 1] = k.y; hid[r][i] = ok.has(r) ? 0 : 1; k.seen = ok.has(r); // 가려지면 마지막 위치 유지
+    });
+  }
+}
+
+/** 고정 인원 추적. 인원이 다 보이는 첫 장면에서 시작해 앞뒤로 따라간다.
+ * opts.engine: 'classical-v1'(기본, 마지막 위치로 매칭) 또는 'classical-v2'(등속 예측·속도 상한·가장자리 확인, opts.court [L,W] 필요) */
+export function trackPlayers(frames, counts, { engine = 'classical-v1', court, names } = {}) {
+  const N = frames.length, v2 = engine === 'classical-v2';
+  if (v2 && !(Array.isArray(court) && court[0] > 0 && court[1] > 0)) throw new Error('classical-v2 추적에는 코트 크기가 필요해요');
+  if (!v2 && engine !== 'classical-v1') throw new Error(`모르는 분석 방식이에요: ${engine}`);
+  const sorted = list => [...list].sort((a, b) => a[0] - b[0]);
+  let starts; // 팀마다 { s: 시작 장면, init: 처음 자리 }
+  if (v2) {
+    // 시작 장면·처음 자리는 코트 가까이(선 밖 rosterOut 이내) 검출로만: 관중·코치로는 절대 트랙을 시작하지 않는다.
+    // 모든 팀이 한꺼번에 다 보이는 장면이 있으면 거기서(예전 v2와 같은 결과), 없으면 팀은 따로 추적되므로 팀마다 그 팀 인원이 다 보이는 첫 장면에서.
+    const ref = inPlayFrames(frames, court), all = ref.findIndex(f => counts.every((c, t) => f.players[t].length === c));
+    starts = counts.map((c, t) => {
+      const s = all >= 0 ? all : ref.findIndex(f => f.players[t].length === c);
+      if (s < 0) throw new Error(`'${names?.[t] ?? `${t + 1}번째`}' 팀 아이 ${c}명이 코트 안에서 한꺼번에 보이는 장면이 없어요. 새 수업 분석의 팀 색 단계에서 그 팀 인원을 실제 인원으로 직접 적어 주세요.`);
+      return { s, init: sorted(ref[s].players[t]) };
+    });
+  } else {
+    const start = frames.findIndex(f => counts.every((c, t) => f.players[t].length === c));
+    if (start < 0) throw new Error('선수가 모두 보이는 장면이 없어요. 팀 색을 다시 골라 주세요.');
+    starts = counts.map((_, t) => ({ s: start, init: sorted(frames[start].players[t]) }));
+  }
+  const run = v2 ? (fr, team, init, idxs, pos, hid) => runTeamV2(fr, team, init, idxs, pos, hid, court) : runTeam;
   const players = [];
   counts.forEach((c, team) => {
-    const init = [...frames[start].players[team]].sort((a, b) => a[0] - b[0]);
+    const { s: start, init } = starts[team];
     const pos = init.map(() => new Float32Array(2 * N)), hid = init.map(() => new Uint8Array(N));
-    runTeam(frames, team, init, Array.from({ length: N - start }, (_, k) => start + k), pos, hid);
-    runTeam(frames, team, init, Array.from({ length: start + 1 }, (_, k) => start - k), pos, hid);
+    run(frames, team, init, Array.from({ length: N - start }, (_, k) => start + k), pos, hid);
+    run(frames, team, init, Array.from({ length: start + 1 }, (_, k) => start - k), pos, hid);
+    if (v2) init.forEach((_, r) => fillGaps(pos[r], hid[r], frames, TRACK_V2));
     init.forEach((_, r) => players.push({ team, pos: pos[r], hidden: hid[r] }));
   });
   return players;
@@ -113,7 +276,8 @@ export function playerStats(pos, hidden, dt, sprintMs = 4) {
   let sprints = 0;
   v.forEach((s, i) => { if (s > sprintMs && !(i && v[i - 1] > sprintMs)) sprints++; });
   const v1 = movAvg(v, Math.round(1 / dt)); // 최고 속도는 1초 평균
-  return { distance: v.reduce((a, b) => a + b, 0) * dt, topSpeed: v1.length ? Math.max(...v1) : 0, sprints, speed: v };
+  // 장면 수만큼 긴 배열이라 Math.max(...v1)로 펼치지 않는다 (긴 영상에서 인자 수 한계로 RangeError). 값은 같다
+  return { distance: v.reduce((a, b) => a + b, 0) * dt, topSpeed: v1.length ? v1.reduce((m, x) => Math.max(m, x), -Infinity) : 0, sprints, speed: v };
 }
 
 /** 공 추적: 장면마다 공 후보 중 하나 또는 "안 보임"을 고르되, 영상 전체에서 비용이 가장 낮은 경로를 고른다(비터비).

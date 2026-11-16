@@ -26,6 +26,21 @@
     <div class="form-row"><label>보기 <select id="filter" aria-label="학교·반으로 거르기"></select></label></div>
     <div id="sessions" class="list"></div>
   </section>
+  <section class="panel" id="importPanel">
+    <h2>분석 결과 가져오기</h2>
+    <p class="sub">이 컴퓨터에서 따로 분석해 만든 결과 파일(…-결과.json)을 새 수업 기록으로 추가해요. 파일은 이 브라우저 안에서만 읽고 어디에도 올리지 않아요. 이미 있는 기록은 바뀌지 않아요. 백업 불러오기와는 달라요.</p>
+    <div class="row-btns"><label class="btn">결과 파일 고르기<input id="fResult" type="file" accept="application/json,.json" hidden></label></div>
+    <div id="impPreview" class="imp-preview" hidden>
+      <dl class="imp-sum" id="impSum"></dl>
+      <div class="form-row"><label>반 <select id="impGroup"></select></label></div>
+      <p class="note" id="impGroupNote"></p>
+      <div class="row-btns imp-btns">
+        <button type="button" id="impSave" class="btn primary" disabled>수업 기록으로 추가</button>
+        <button type="button" id="impCancel" class="btn">취소</button>
+      </div>
+    </div>
+    <p class="rv-msg" id="impMsg" role="status" aria-live="polite" tabindex="-1"></p>
+  </section>
   <section class="panel">
     <h2>백업</h2>
     <p class="sub">기록은 이 브라우저에만 저장돼요. 브라우저 데이터를 지우면 사라지니 가끔 백업 파일을 받아 두세요.</p>
@@ -81,9 +96,26 @@
       <div class="form-row">
         <label>수업 제목 <input id="title" type="text" placeholder="예: 3학년 2반 풋살"></label>
         <label>날짜 <input id="date" type="date"></label>
-        <button id="bRun" class="btn primary" disabled>분석 시작</button>
       </div>
       <p class="note">원이 아이마다 하나씩 붙는지 장면을 몇 군데 넘겨 확인해 보세요. 팀별 인원을 알면 '인원'에 적어 주세요. 비워 두면 영상에서 가장 자주 보인 수로 정해요.</p>
+      <div class="row-btns job-actions">
+        <button id="bJob" class="btn primary" disabled>작업 설정 파일 받기</button>
+        <button id="bRun" class="btn" disabled>이 브라우저에서 바로 분석</button>
+      </div>
+      <p class="note">Node.js·ffmpeg를 설치하지 않았다면 <b>이 브라우저에서 바로 분석</b>을 눌러요(설치 없이 이 탭에서 분석해요).</p>
+      <p class="note">작업 설정 파일에는 영상 파일 이름, 분석 화면 크기, 코트 모서리·크기, 팀 이름·색(적었다면 인원도), 수업 제목·날짜, 반 번호(이 앱 안에서 반을 가리키는 번호)가 들어가요. 영상과 장면 그림은 들어가지 않아요. 이 파일과 영상으로 <b>이 컴퓨터에서</b> 따로 분석한 뒤 결과 파일을 가져오는 방식이라, 어디에도 올리지 않아요. 브라우저 탭을 열어 둘 필요가 없고, 분석 방법은 브라우저 분석과 같아요.</p>
+      <p class="rv-msg" id="jobMsg" role="status" aria-live="polite" tabindex="-1"></p>
+      <div class="job-done" id="jobDone" hidden tabindex="-1" aria-labelledby="jobDoneTitle">
+        <h3 id="jobDoneTitle">작업 설정 파일을 받았어요</h3>
+        <p class="note">받은 파일: <b id="jobName"></b> (보통 '다운로드' 폴더). 이제 이 컴퓨터에서 아래 순서로 분석해요.</p>
+        <ol class="job-steps">
+          <li>처음 한 번만: 이 컴퓨터에 <b>Node.js</b>와 <b>ffmpeg</b>를 설치하고 풋살 코치 폴더를 받아 둬요. 방법은 <a href="https://github.com/circle-commit/futsal-coach#로컬-분석" target="_blank" rel="noopener">README(로컬 분석)</a>에 있어요. 설치가 어려우면 <b>이 브라우저에서 바로 분석</b>을 써도 돼요.</li>
+          <li>수업 영상(<b id="jobVideo"></b>)과 받은 작업 설정 파일을 풋살 코치 폴더 안의 <b>samples</b> 폴더에 넣고(없으면 만들어요), <b>풋살 코치 폴더</b>에서 터미널을 열어 아래 명령을 실행해요.
+            <div class="cmd"><code id="jobCmd"></code><button type="button" class="btn small" id="bCopyCmd">명령 복사</button></div>
+            <span class="note">예시 명령이에요. 브라우저는 파일이 어느 폴더에 있는지 알 수 없어서 samples 폴더에 넣었다고 보고 만들었어요. 다른 곳에 두었다면 경로를 바꿔 주세요. 받은 파일 이름이 다르면((1)이 붙는 등) 명령 속 이름도 바꿔 주세요. Ctrl+C로 멈췄다면 같은 명령 끝에 <code>--resume</code>을 붙여 다시 실행하면 이어서 해요.</span></li>
+          <li>분석이 끝나면 결과 파일 <b id="jobOut"></b>이 생겨요. <a href="#home">수업 기록</a> 화면의 <b>분석 결과 가져오기</b>에서 그 파일을 고르면 수업 기록이 생기고, 바로 검수·교정할 수 있어요.</li>
+        </ol>
+      </div>
     </div>
 
     <div data-step="4" hidden>
@@ -102,10 +134,13 @@
       <div><h1 id="sTitle"></h1><p class="sub" id="sMeta"></p></div>
       <div class="row-btns">
         <a class="btn primary" id="toTactics">전술 분석 보기</a>
+        <button type="button" id="bSaveFile" class="btn">분석 결과 저장</button>
         <label class="btn" id="linkVideo">영상 연결<input id="fLink" type="file" accept="video/*" hidden></label>
         <button id="bDelete" class="btn danger">기록 지우기</button>
       </div>
     </div>
+    <p class="note">분석 결과 저장: 이 수업과, 이름이 연결된 아이·반 정보를 파일 하나로 보관해요(현재 결과·자동 분석 원본·교정 기록 포함, 영상은 들어가지 않아요). 다시 열 때는 홈의 <b>백업 불러오기</b>에서 그 파일을 골라요.</p>
+    <p class="rv-msg" id="saveMsg" role="status" aria-live="polite" tabindex="-1"></p>
   </section>
   <div class="grid2">
     <section class="panel" id="videoPanel">
@@ -131,6 +166,45 @@
       <p class="note">팀원끼리 평균 거리예요. 낮을수록 다 같이 공 쪽으로 몰려 있다는 뜻이에요. 그래프를 누르면 그 장면으로 가요.</p>
     </section>
   </div>
+  <section class="panel" id="reviewPanel">
+    <h2>검수·교정 <small>같은 팀 아이끼리 번호가 바뀐 구간을 바로잡아요</small></h2>
+    <p class="note rv-warn">아래 목록은 자동으로 고른 <b>확인해 볼 곳</b>이에요. 오류로 확정된 게 아니니 영상을 보고 판단해 주세요.
+      교정하면 모든 통계를 저장된 위치(0.01m 반올림)로 다시 계산해서, 바꾸지 않은 아이의 숫자도 조금 달라질 수 있어요.</p>
+    <p class="note" id="rvNoVideo">영상을 연결하면(위의 <b>영상 연결</b>) 목록을 눌러 그 장면을 바로 볼 수 있어요.</p>
+    <div class="rv-grid">
+      <div>
+        <h3>확인해 볼 곳 <small id="rvCount"></small></h3>
+        <div class="rv-list" id="rvList"></div>
+      </div>
+      <div>
+        <h3>번호 바로잡기 <small>두 아이의 경로를 그 구간만 맞바꿔요</small></h3>
+        <div class="rv-form">
+          <label for="rvA">선수 A</label><select id="rvA"></select><span></span>
+          <label for="rvB">선수 B (같은 팀)</label><select id="rvB"></select><span></span>
+          <label for="rvStart">시작(초)</label><input id="rvStart" type="number" min="0" step="0.1" inputmode="decimal"><button type="button" class="btn small" id="rvStartNow">현재 시각</button>
+          <label for="rvEnd">끝(초)</label><input id="rvEnd" type="number" min="0" step="0.1" inputmode="decimal"><button type="button" class="btn small" id="rvEndNow">현재 시각</button>
+        </div>
+        <div class="row-btns rv-btns">
+          <button type="button" class="btn primary" id="rvSwap">경로 맞바꾸기</button>
+          <button type="button" class="btn" id="rvUndo">직전 취소</button>
+          <button type="button" class="btn danger" id="rvRestore">원본 복원</button>
+        </div>
+        <p class="note">목록을 누르면 그 아이와 확인할 위치가 채워져요. 실제로 번호가 바뀐 시작·끝은 영상을 보고 직접 정해 주세요.</p>
+        <p class="rv-msg" id="rvMsg" role="status" aria-live="polite" tabindex="-1"></p>
+        <p class="note" id="rvLimits"></p>
+        <h3>교정 기록 <small id="rvEditCount"></small></h3>
+        <ol class="rv-edits" id="rvEdits"></ol>
+      </div>
+    </div>
+  </section>
+  <section class="panel" id="cmpPanel" hidden>
+    <h2 id="cmpTitle">교정 전후 비교 <small id="cmpSum"></small></h2>
+    <p class="note">원본 숫자는 보관한 자동 분석 원본을 저장된 위치(0.01m 반올림)로 다시 계산한 값이에요. 그래서 분석 직후 카드에 보이던 원본 숫자와 조금 다를 수 있어요. 교정 후 숫자도 같은 방법으로 계산해서 둘을 바로 비교할 수 있어요. 변화는 표에 보이는 단위(거리 1m, 속도·공 소유 0.1)로 반올림한 두 숫자의 차이예요.</p>
+    <p class="rv-msg" id="cmpMsg" role="status"></p>
+    <div class="tbl-wrap cmp-wrap" id="cmpWrap" role="region" aria-labelledby="cmpTitle" tabindex="0" hidden>
+      <table class="tbl cmp" id="cmpTable"></table>
+    </div>
+  </section>
   <section class="panel">
     <h2>아이별 활동량 <small>이름 칸에서 명단의 아이를 고르면 수업마다 기록이 쌓여요</small></h2>
     <div class="teams-sum" id="teamsSum"></div>

@@ -1,6 +1,6 @@
 // 설정(코트 모서리·팀 색) → 검출 설정, 그리고 검출 결과 → 최종 분석 결과.
 import { homography, applyH, courtMask } from './vision.js';
-import { rosterCounts, trackPlayers, trackBall, resample, resampleFlags, playerStats, possession } from './track.js';
+import { rosterCounts, trackPlayers, trackBall, resample, resampleFlags, playerStats, possession, inPlayFrames } from './track.js';
 
 export const DT = 0.1; // 결과는 0.1초 간격
 
@@ -19,7 +19,9 @@ export function setup(cfg, bg) {
     ball: { minA: Math.max(4, 0.3 * ballA), maxA: 6 * ballA }, // 압축 영상에선 공이 번져서 커 보임
   };
   const m = list => list.map(([x, y, ...rest]) => [...applyH(Hm, x, y), ...rest]);
-  return { ppm, det, Hm, Hp, toMeters: d => ({ players: d.players.map(m), ball: m(d.ball) }) };
+  // 나누기 후보(split, v2 검출에만)도 m로. 없으면 예전과 같은 모양
+  const toMeters = d => (d.split ? { players: d.players.map(m), ball: m(d.ball), split: d.split.map(([t, j, parts]) => [t, j, m(parts)]) } : { players: d.players.map(m), ball: m(d.ball) });
+  return { ppm, det, Hm, Hp, toMeters };
 }
 
 // 팀 색 판정에 쓰는 값. 중심(mid)이 없으면 범위 가운데로
@@ -27,10 +29,18 @@ export const teamGate = t => ({ hue: t.hue, sat: t.sat, mid: t.mid ?? [t.hue[0] 
 
 const r2 = a => Array.from(a, v => (Number.isNaN(v) ? null : Math.round(v * 100) / 100));
 
-/** dets: [{ t, players, ball }] (m 좌표) → 저장·화면용 결과 (JSON으로 바로 저장 가능) */
-export function analyzeFrames(dets, cfg) {
-  const counts = rosterCounts(dets, cfg.teams.length).map((c, t) => cfg.teams[t].count || c); // 선생님이 적은 인원이 있으면 그걸로
-  const tracked = trackPlayers(dets, counts);
+/** 분석 방식(엔진). 기본은 v2(브라우저 분석·로컬 도구 모두). v1은 비교용으로 남김.
+ * v2는 추적만 다르다: 등속 예측 매칭·속도 상한·가장자리 확인·관중 뺀 인원 세기·짧은 틈 잇기 (track.js TRACK_V2) */
+export const ENGINES = Object.freeze(['classical-v1', 'classical-v2']);
+export const DEFAULT_ENGINE = 'classical-v2';
+
+/** dets: [{ t, players, ball }] (m 좌표) → 저장·화면용 결과 (JSON으로 바로 저장 가능). opts.engine 기본 classical-v2 */
+export function analyzeFrames(dets, cfg, { engine = DEFAULT_ENGINE } = {}) {
+  if (!ENGINES.includes(engine)) throw new Error(`모르는 분석 방식이에요: ${engine}`);
+  // 선생님이 적은 인원이 있으면 그걸로. v2는 코트 선 밖 0.75m 넘는 검출(관중·코치)은 세지 않음
+  const counts = rosterCounts(engine === 'classical-v2' ? inPlayFrames(dets, cfg.court) : dets, cfg.teams.length).map((c, t) => cfg.teams[t].count || c);
+  // v2: 붙은 덩어리 나누기 후보(split)는 추적 안에서 "아이가 붙어서 하나로 보인 경우"에만 쓴다 (track.js TRACK_V2 splitNear·bigShare). 인원은 나누기 전 검출로 셈
+  const tracked = trackPlayers(dets, counts, { engine, court: cfg.court, names: cfg.teams.map(t => t.name) }); // 이름은 오류 안내용
   const times = dets.map(d => d.t);
   const ballRaw = trackBall(dets);
   const players = tracked.map(p => ({ team: p.team, pos: resample(times, p.pos, DT), hidden: resampleFlags(times, p.hidden, DT) }));

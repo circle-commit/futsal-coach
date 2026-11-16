@@ -17,7 +17,7 @@ function db() {
 function run(d, stores, mode, fn) {
   return new Promise((res, rej) => {
     const t = d.transaction(stores, mode), out = fn(t);
-    t.oncomplete = () => res(out?.result ?? out);
+    t.oncomplete = () => res(out && typeof out === 'object' && 'result' in out ? out.result : out); // 요청이면 그 결과 (없는 key의 get은 undefined)
     t.onerror = () => rej(t.error);
     t.onabort = () => rej(t.error || new Error('저장이 취소됐어요'));
   });

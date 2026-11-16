@@ -115,9 +115,37 @@ export function foreground(frame, bg, roi, w, h, thr, openR) {
   return morph(morph(fg, w, h, openR, false), w, h, openR, true); // 열기: 라인 떨림·잡티 제거
 }
 
-/** 한 프레임에서 팀별 선수 위치와 공 후보(px)를 찾는다.
- * cfg: { bg, roi, w, h, thr, openR, joinR, minPx, teams:[{hue:[lo,hi], sat:[lo,hi]}], ball:{minA, maxA} } */
-export function detect(frame, cfg) {
+// 붙은 같은 팀 덩어리 나누기 (classical-v2): 덩어리 안 그 팀 색 픽셀이 몸 크기의 ratio배 이상이면 k = round(픽셀 ÷ 몸 크기)명(2~maxK)으로 보고
+// 그 팀 색 픽셀을 k-평균으로 나눈 후보를 함께 낸다. 나눈 조각이 몸 크기의 minPart배보다 작으면 k를 줄인다(팔·자세로 커진 한 아이를 둘로 만들지 않게).
+// 후보를 실제로 쓸지는 추적 단계가 정한다: 팀이 모자라고, 그 덩어리를 이어 온 트랙이 있고, 그 트랙이 혼자서도 큰 사람이 아닐 때만 (track.js runTeamV2)
+export const SPLIT = Object.freeze({ ratio: 1.6, maxK: 4, minPart: 0.5 });
+
+// 결정적 k-평균: 덩어리 중심에서 가장 먼 점, 그다음 이미 고른 점들에서 가장 먼 점… 을 시작점으로 10번 반복 (같으면 번호 작은 쪽)
+function kmeans2(xs, ys, k) {
+  const n = xs.length; let cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) { cx += xs[i]; cy += ys[i]; }
+  cx /= n; cy /= n;
+  const C = []; let bi = 0, bv = -1;
+  for (let i = 0; i < n; i++) { const d = (xs[i] - cx) ** 2 + (ys[i] - cy) ** 2; if (d > bv) { bv = d; bi = i; } }
+  C.push([xs[bi], ys[bi]]);
+  while (C.length < k) {
+    bi = 0; bv = -1;
+    for (let i = 0; i < n; i++) { let m = Infinity; for (const c of C) m = Math.min(m, (xs[i] - c[0]) ** 2 + (ys[i] - c[1]) ** 2); if (m > bv) { bv = m; bi = i; } }
+    C.push([xs[bi], ys[bi]]);
+  }
+  const lab = new Int32Array(n);
+  for (let it = 0; it < 10; it++) {
+    for (let i = 0; i < n; i++) { let b = 0, d0 = Infinity; for (let j = 0; j < C.length; j++) { const d = (xs[i] - C[j][0]) ** 2 + (ys[i] - C[j][1]) ** 2; if (d < d0) { d0 = d; b = j; } } lab[i] = b; }
+    const S = C.map(() => [0, 0, 0]);
+    for (let i = 0; i < n; i++) { S[lab[i]][0] += xs[i]; S[lab[i]][1] += ys[i]; S[lab[i]][2]++; }
+    S.forEach((s, j) => { if (s[2]) C[j] = [s[0] / s[2], s[1] / s[2]]; });
+  }
+  const sz = C.map(() => 0); for (let i = 0; i < n; i++) sz[lab[i]]++;
+  return C.map((c, j) => ({ x: c[0], y: c[1], n: sz[j] })).filter(c => c.n > 0);
+}
+
+// 팀 색 덩어리: 픽셀마다 팀을 정하고 조끼 조각을 한 사람으로 묶어, 덩어리마다 남길 팀 검출을 고른다 (detect·bodySizes가 같이 씀)
+function teamBlobs(frame, cfg) {
   const { w, h, teams } = cfg, N = w * h;
   const fg = foreground(frame, cfg.bg, cfg.roi, w, h, cfg.thr, cfg.openR);
   const T = teams.length, teamOf = new Int8Array(N).fill(-1), any = new Uint8Array(N), white = new Uint8Array(N);
@@ -144,7 +172,7 @@ export function detect(frame, cfg) {
     const t = teamOf[i]; if (t < 0) continue;
     const k = lab[i] * T + t; cnt[k]++; sx[k] += i % w; sy[k] += (i / w) | 0;
   }
-  const players = teams.map(() => []);
+  const kept = []; // 남길 팀 검출 { t, n: 색 픽셀 수, x, y, key: 덩어리×팀 } (players에 들어갈 순서 그대로)
   for (let l = 1; l <= n; l++) {
     let top = 0; for (let t = 0; t < T; t++) top = Math.max(top, cnt[l * T + t]);
     // 한 덩어리 안의 적은 쪽 색은 옷 가장자리·그늘일 가능성이 커서, 큰 쪽의 30% 이상이고
@@ -152,12 +180,66 @@ export function detect(frame, cfg) {
     const keep = [];
     for (let t = 0; t < T; t++) {
       const k = l * T + t;
-      if (cnt[k] >= cfg.minPx && cnt[k] >= 0.3 * top) keep.push({ t, n: cnt[k], x: sx[k] / cnt[k], y: sy[k] / cnt[k] });
+      if (cnt[k] >= cfg.minPx && cnt[k] >= 0.3 * top) keep.push({ t, n: cnt[k], x: sx[k] / cnt[k], y: sy[k] / cnt[k], key: k });
     }
     keep.sort((a, b) => b.n - a.n);
     const near = 2.5 * cfg.joinR; // 약 0.4m
-    keep.forEach((c, i) => { if (keep.slice(0, i).every(o => Math.hypot(o.x - c.x, o.y - c.y) > near)) players[c.t].push([c.x, c.y]); });
+    keep.forEach((c, i) => { if (keep.slice(0, i).every(o => Math.hypot(o.x - c.x, o.y - c.y) > near)) kept.push(c); });
   }
+  return { fg, white, teamOf, lab, T, kept };
+}
+
+// 큰 덩어리(몸 크기 ratio배 이상)의 나누기 후보: [[팀, players[팀]에서의 번호, [[x,y],…]], …] (덩어리 번호 순)
+function splitBlobs(kept, teamOf, lab, T, w, N, bodyPx) {
+  const big = new Map(), seen = new Array(T).fill(0);
+  for (const c of kept) {
+    const j = seen[c.t]++, s1 = bodyPx[c.t];
+    if (s1 > 0 && c.n >= SPLIT.ratio * s1) big.set(c.key, { c, j, k: Math.min(SPLIT.maxK, Math.max(2, Math.round(c.n / s1))) });
+  }
+  if (!big.size) return [];
+  const pts = new Map([...big.keys()].map(k => [k, { xs: [], ys: [] }])); // 큰 덩어리만 그 팀 색 픽셀을 모은다
+  for (let i = 0; i < N; i++) { const t = teamOf[i]; if (t < 0) continue; const q = pts.get(lab[i] * T + t); if (q) { q.xs.push(i % w); q.ys.push((i / w) | 0); } }
+  const out = [];
+  for (const [key, { c, j, k }] of [...big.entries()].sort((a, b) => a[0] - b[0])) {
+    const { xs, ys } = pts.get(key);
+    for (let kk = k; kk >= 2; kk--) {
+      const parts = kmeans2(xs, ys, kk);
+      if (parts.length === kk && parts.every(p => p.n >= SPLIT.minPart * bodyPx[c.t])) {
+        out.push([c.t, j, parts.sort((a, b) => a.x - b.x || a.y - b.y).map(p => [p.x, p.y])]);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** 팀별 몸 크기(조끼 색 픽셀 수): 영상 전체에서 고르게 고른 장면들(배경을 만든 30장)에서, 그 팀 검출 수가 가장 흔한 수(=인원)인
+ * 장면들의 검출 색 픽셀 수 중앙값. 팀이 안 보이면 0(나누지 않음). cfg = setup(...).det (배경 포함) */
+export function bodySizes(frames, cfg) {
+  const T = cfg.teams.length, per = Array.from({ length: T }, () => []);
+  for (const f of frames) {
+    const by = Array.from({ length: T }, () => []);
+    for (const c of teamBlobs(f, cfg).kept) by[c.t].push(c.n);
+    by.forEach((l, t) => per[t].push(l));
+  }
+  return per.map(lists => {
+    const freq = new Map(); for (const l of lists) freq.set(l.length, (freq.get(l.length) || 0) + 1);
+    let mode = 0, best = -1;
+    for (const [len, c] of [...freq].sort((a, b) => a[0] - b[0])) if (c > best || (c === best && len > mode)) { best = c; mode = len; } // 같으면 큰 수
+    const ns = lists.filter(l => l.length === mode).flat().sort((a, b) => a - b);
+    return mode > 0 && ns.length ? ns[ns.length >> 1] : 0;
+  });
+}
+
+/** 한 프레임에서 팀별 선수 위치와 공 후보(px)를 찾는다.
+ * cfg: { bg, roi, w, h, thr, openR, joinR, minPx, teams:[{hue:[lo,hi], sat:[lo,hi]}], ball:{minA, maxA}, bodyPx? }
+ * cfg.bodyPx(팀별 몸 크기, classical-v2)가 있으면 붙은 덩어리 나누기 후보 split도 낸다. players는 그것과 상관없이 늘 같다 */
+export function detect(frame, cfg) {
+  const { w, h, teams } = cfg, N = w * h;
+  const { fg, white, teamOf, lab: tlab, T, kept } = teamBlobs(frame, cfg);
+  const players = teams.map(() => []);
+  for (const c of kept) players[c.t].push([c.x, c.y]);
+  const split = cfg.bodyPx ? splitBlobs(kept, teamOf, tlab, T, w, N, cfg.bodyPx) : [];
   const ball = [];
   if (cfg.ball) {
     const { lab, n } = components(white, w, h);
@@ -181,7 +263,7 @@ export function detect(frame, cfg) {
       ball.push([sx[l] / cnt[l], sy[l] / cnt[l], bodyArea[body.lab[first[l]]] < 3 * cnt[l] ? 1 : 0]); // 셋째 값: 1 = 혼자 떨어진 공
     }
   }
-  return { players, ball };
+  return split.length ? { players, ball, split } : { players, ball }; // 후보가 없으면 예전과 같은 모양
 }
 
 function nearWhite(bg, w, h, cx, cy, r) {

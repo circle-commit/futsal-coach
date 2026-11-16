@@ -90,7 +90,8 @@ export async function renderTactics(id) {
   }
 
   // ---------- 영역 그래프 + 공 띠 ----------
-  const areaMax = Math.max(1, ...[A, B].filter(t => t != null).flatMap(t => Array.from(tc.metrics[t].area))) * 1.1;
+  // 장면 수만큼 긴 배열이라 Math.max(1, ...)로 펼치지 않고 하나씩 비교 (긴 영상에서 인자 수 한계로 RangeError). 값은 같다
+  const areaMax = [A, B].filter(t => t != null).reduce((m, t) => tc.metrics[t].area.reduce((x, a) => Math.max(x, a), m), 1) * 1.1;
   function drawArea(i) {
     const c = $('#tArea'), w = c.clientWidth, h = 190, ctx = fit(c, w, h), M = 40, top = 8, bot = 44;
     const X = k => M + (k / (N - 1)) * (w - M - 8), Y = a => top + (1 - a / areaMax) * (h - top - bot);

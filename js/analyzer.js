@@ -1,5 +1,5 @@
 // 메인 스레드: 영상에서 프레임을 뽑아 워커들에게 나눠 주고 결과를 모은다.
-import { DT, analyzeFrames } from './pipeline.js';
+import { DT, analyzeFrames, DEFAULT_ENGINE } from './pipeline.js';
 
 const newWorker = () => new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
@@ -39,9 +39,30 @@ export async function buildBackground(video, onProgress) {
   return bg;
 }
 
-/** 영상을 빠르게 재생하며 0.1초마다 한 장씩 워커에 보낸다. 결과 = analyzeFrames 출력 */
+/** classical-v2: 배경과 같은 30장(같은 시각)으로 팀별 몸 크기를 잰다 = 로컬 분석 도구와 같은 vision.bodySizes (붙은 덩어리 나누기 기준).
+ * 팀 색은 배경을 만든 뒤에 정하므로 분석을 시작할 때 같은 장면을 다시 읽는다 */
+export async function measureBodies(video, cfg, bg, signal) {
+  const grab = grabber(video), n = 30, frames = [];
+  for (let k = 0; k < n; k++) {
+    if (signal?.aborted) throw new DOMException('분석을 멈췄어요', 'AbortError');
+    await seek(video, (video.duration * (k + 0.5)) / n);
+    frames.push(grab().buffer);
+  }
+  const wk = newWorker();
+  try {
+    return await new Promise((res, rej) => {
+      wk.onmessage = ({ data }) => (data.type === 'error' ? rej(new Error(data.message)) : res(data.bodyPx));
+      wk.onerror = e => rej(new Error(e.message || '워커를 시작하지 못했어요'));
+      wk.postMessage({ type: 'body', frames, cfg, bg: bg.slice().buffer }, frames);
+    });
+  } finally { wk.terminate(); }
+}
+
+/** 영상을 빠르게 재생하며 0.1초마다 한 장씩 워커에 보낸다. 결과 = analyzeFrames 출력 (기본 분석 방식) */
 export async function runAnalysis(video, cfg, bg, { onProgress, signal } = {}) {
   if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) throw new Error('이 브라우저는 영상 분석을 지원하지 않아요. 최신 크롬이나 사파리를 써 주세요.');
+  onProgress?.(0, '팀별 몸 크기를 재는 중…');
+  const bodyPx = DEFAULT_ENGINE === 'classical-v1' ? null : await measureBodies(video, cfg, bg, signal);
   const N = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
   const workers = Array.from({ length: N }, newWorker);
   const stop = () => { workers.forEach(w => w.terminate()); video.pause(); video.playbackRate = 1; };
@@ -49,7 +70,7 @@ export async function runAnalysis(video, cfg, bg, { onProgress, signal } = {}) {
     await Promise.all(workers.map(w => new Promise((res, rej) => {
       w.onmessage = ({ data }) => (data.type === 'ready' ? res() : rej(new Error(data.message)));
       w.onerror = e => rej(new Error(e.message || '워커를 시작하지 못했어요'));
-      w.postMessage({ type: 'init', cfg, bg: bg.slice().buffer });
+      w.postMessage({ type: 'init', cfg, bg: bg.slice().buffer, bodyPx });
     })));
   } catch (e) { stop(); throw e; }
 
@@ -60,7 +81,7 @@ export async function runAnalysis(video, cfg, bg, { onProgress, signal } = {}) {
   workers.forEach(w => {
     w.onmessage = ({ data: m }) => {
       if (m.type === 'error') return fail(new Error(m.message));
-      dets.push({ t: m.t, players: m.players, ball: m.ball });
+      dets.push({ t: m.t, players: m.players, ball: m.ball, ...(m.split ? { split: m.split } : {}) }); // split: v2 나누기 후보
       pending--; wake?.();
     };
     w.onerror = e => fail(new Error(e.message || '분석 중 오류'));

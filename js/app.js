@@ -13,6 +13,14 @@ export const onLeave = fn => { cleanup = fn; };
 export const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 export const sessionVideos = new Map(); // 이번 접속에서 연결한 영상 (저장하지 않음)
 
+/** JSON 파일을 이 컴퓨터로 내려받는다 (어디로도 보내지 않음) */
+export function downloadJSON(name, data) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  a.download = name; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
 /** 확인창 (input이 있으면 입력값, 없으면 true/false) */
 export function ask(msg, { input = null, ok = '확인' } = {}) {
   const d = document.getElementById('dialog'), inp = document.getElementById('dlgInput'), yes = document.getElementById('dlgYes'), no = document.getElementById('dlgNo');
@@ -38,9 +46,13 @@ export async function orgIndex() {
 const storeGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
 const storeSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 
+/** 반환: 다 그렸으면 true, 불러오는 사이 다른 화면으로 가서 그리지 않았으면 false */
 async function home() {
   mount('t-home');
+  // 불러오는 사이(또는 결과 가져오기 중) 다른 화면으로 가면 그 화면을 덮거나 끌고 가지 않게
+  let left = false; onLeave(() => { left = true; });
   const [sessions, kids, org] = await Promise.all([store.listSessions(), store.listKids(), orgIndex()]);
+  if (left) return false;
   const f = $('#filter');
   f.innerHTML = '<option value="">전체</option>' + org.schools.map(sc => `<optgroup label="${esc(sc.name)}"><option value="s:${sc.id}">${esc(sc.name)} 전체</option>` +
     org.groups.filter(g => g.schoolId === sc.id).map(g => `<option value="g:${g.id}">${esc(g.name)}</option>`).join('') + '</optgroup>').join('');
@@ -61,20 +73,24 @@ async function home() {
   };
   f.onchange = draw; draw();
   $('#bExport').onclick = async () => {
-    const blob = new Blob([JSON.stringify(await store.exportAll())], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `풋살코치-백업-${new Date().toISOString().slice(0, 10)}.json`; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    $('#backupMsg').textContent = '백업 파일을 받았어요.';
+    downloadJSON(`풋살코치-백업-${new Date().toISOString().slice(0, 10)}.json`, await store.exportAll()); // 누른 뒤 떠나도 파일은 받음
+    if (!left) $('#backupMsg').textContent = '백업 파일을 받았어요.';
   };
   $('#fImport').onchange = async e => {
     const file = e.target.files[0]; if (!file) return;
     try {
       const data = JSON.parse(await file.text());
-      if (!(await ask(`백업의 학교 ${data.schools?.length ?? 0}곳, 아이 ${data.kids?.length ?? 0}명, 수업 ${data.sessions?.length ?? 0}개를 불러올까요? 같은 기록은 백업 내용으로 바뀌어요.`, { ok: '불러오기' }))) return;
+      if (left) return;
+      if (!(await ask(`백업의 학교 ${data.schools?.length ?? 0}곳, 아이 ${data.kids?.length ?? 0}명, 수업 ${data.sessions?.length ?? 0}개를 불러올까요? 같은 기록은 백업 내용으로 바뀌어요.`, { ok: '불러오기' })) || left) return;
       const r = await store.importAll(data);
-      await home(); $('#backupMsg').textContent = `학교 ${r.schools}곳, 아이 ${r.kids}명, 수업 ${r.sessions}개를 불러왔어요.`;
-    } catch (err) { $('#backupMsg').textContent = '불러오지 못했어요: ' + err.message; }
+      if (left) return; // 그사이 다른 화면으로 갔으면 홈을 다시 그려 덮지 않음 (불러오기는 끝남)
+      if (await home()) $('#backupMsg').textContent = `학교 ${r.schools}곳, 아이 ${r.kids}명, 수업 ${r.sessions}개를 불러왔어요.`;
+    } catch (err) { if (!left) $('#backupMsg').textContent = '불러오지 못했어요: ' + err.message; }
   };
+  // 따로 분석한 결과 파일 가져오기 (백업과 별개, 늘 새 기록)
+  try { const imp = await import('./import-analysis.js'); if (left) return false; imp.setupImport({ org, isLeft: () => left }); }
+  catch (e) { if (left) return false; $('#impMsg').textContent = '결과 가져오기를 준비하지 못했어요: ' + e.message; }
+  return true;
 }
 
 // 학교·반 목록

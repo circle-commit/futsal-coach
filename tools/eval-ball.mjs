@@ -1,18 +1,23 @@
 // 공 추적 정확도 재기: 분석 결과 vs 사람이 표시한 정답
 // 사용: node tools/eval-ball.mjs 결과.json 공정답.json [허용오차m=0.75]
-//   결과.json: tools/analyze.mjs 출력, 또는 앱 백업 파일(수업이 여럿이면 SESSION=제목일부 로 고르기)
+//   결과.json: tools/analyze.mjs 출력(결과 파일 RESULT 또는 예전 설정 파일로 돌린 결과 그대로), 또는 앱 백업 파일(수업이 여럿이면 SESSION=제목일부 로 고르기)
 import { readFileSync } from 'node:fs';
 import { homography, applyH } from '../js/vision.js';
 
 const [resPath, labPath, tolArg] = process.argv.slice(2);
 if (!resPath || !labPath) { console.error('사용: node tools/eval-ball.mjs 결과.json 공정답.json [허용오차m]'); process.exit(1); }
-let R = JSON.parse(readFileSync(resPath, 'utf8'));
+let R = JSON.parse(readFileSync(resPath, 'utf8')), engine = null;
 if (R.app === 'futsal-coach') { // 앱 백업 파일
   const ss = R.sessions.filter(s => !process.env.SESSION || (s.title + ' ' + s.date).includes(process.env.SESSION));
   if (ss.length !== 1) { console.error('수업을 하나로 골라 주세요 (SESSION=제목일부):', R.sessions.map(s => s.title + ' ' + s.date).join(', ')); process.exit(1); }
+  engine = ss[0].analysis?.engine ?? null;
   R = ss[0].result;
+} else if (R.app === 'futsal-coach-analysis') { // 로컬 분석 도구의 결과 파일(RESULT): 분석 결과가 result 안에 들어 있음
+  engine = R.analysis?.engine ?? null;
+  R = R.result;
 }
 const tol = +(tolArg ?? 0.75);
+if (engine) console.log(`분석 방식: ${engine}`);
 const lab = JSON.parse(readFileSync(labPath, 'utf8'));
 const [L, W] = R.court, Hm = homography(R.video.corners, [[0, 0], [L, 0], [L, W], [0, W]]);
 const c = { ball: 0, hit: 0, wrong: 0, miss: 0, hidden: 0, hiddenShown: 0 }, errs = [], bad = [];

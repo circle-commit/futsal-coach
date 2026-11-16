@@ -1,3 +1,6 @@
 samples/
 .DS_Store
 node_modules/
+bench-out/
+# 로컬 분석 중간 저장(<결과 파일>.work): samples/ 밖에 결과를 써도 올라가지 않게
+*.work/
