@@ -13,7 +13,7 @@ onmessage = ({ data: m }) => {
       postMessage({ type: 'body', bodyPx: bodySizes(m.frames.map(b => new Uint8ClampedArray(b)), s0.det) });
     } else if (m.type === 'init') {
       s = setup(m.cfg, new Uint8ClampedArray(m.bg));
-      if (m.bodyPx) s.det.bodyPx = m.bodyPx; // classical-v2: 붙은 덩어리 나누기 후보(split)·색 없는 덩어리(uncol)·아이 한 명 몸 넓이(kidFg)도 검출 (검출 버전 3)
+      if (m.bodyPx) s.det.bodyPx = m.bodyPx; // classical-v2: 붙은 덩어리 나누기 후보(split)·색 없는 덩어리(uncol)·아이 한 명 몸 넓이(kidFg)와 공 후보 넓이(공 줄 넷째 칸)도 검출 (검출 버전 4)
       postMessage({ type: 'ready' });
     } else if (m.type === 'frame') {
       const d = s.toMeters(detect(new Uint8ClampedArray(m.buf), s.det));

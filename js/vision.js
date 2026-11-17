@@ -233,8 +233,9 @@ export function bodySizes(frames, cfg) {
 
 /** 한 프레임에서 팀별 선수 위치와 공 후보(px)를 찾는다.
  * cfg: { bg, roi, w, h, thr, openR, joinR, minPx, teams:[{hue:[lo,hi], sat:[lo,hi]}], ball:{minA, maxA}, bodyPx? }
- * cfg.bodyPx(팀별 몸 크기, classical-v2)가 있으면 v2 검출(검출 버전 3)로 붙은 덩어리 나누기 후보 split(있을 때만)과
- * 색 없는 움직임 덩어리 uncol·아이 한 명 몸덩어리 넓이 kidFg(bodyBlobs)도 낸다. players·ball은 그것과 상관없이 늘 같다 */
+ * cfg.bodyPx(팀별 몸 크기, classical-v2)가 있으면 v2 검출(검출 버전 4)로 붙은 덩어리 나누기 후보 split(있을 때만)과
+ * 색 없는 움직임 덩어리 uncol·아이 한 명 몸덩어리 넓이 kidFg(bodyBlobs)도 내고, 공 후보 줄에 넷째 칸(흰 점 넓이 px)을 더한다.
+ * players와 공 후보 줄의 앞 세 칸 [x, y, 혼자]는 v1과 늘 같다 */
 export function detect(frame, cfg) {
   const { w, h, teams } = cfg, N = w * h, v2 = !!cfg.bodyPx;
   const { fg, white, teamOf, lab: tlab, T, kept } = teamBlobs(frame, cfg);
@@ -263,14 +264,15 @@ export function detect(frame, cfg) {
       if (Math.max(bw, bh) > 2 * Math.min(bw, bh) || cnt[l] < 0.45 * bw * bh) continue; // 공은 동그랗고 꽉 참
       const bx = Math.round(sx[l] / cnt[l]), by = Math.round(sy[l] / cnt[l]);
       if (nearWhite(cfg.bg, w, h, bx, by, 3)) continue; // 원래 흰 라인이 있던 자리(라인 떨림)
-      ball.push([sx[l] / cnt[l], sy[l] / cnt[l], bodyArea[body.lab[first[l]]] < 3 * cnt[l] ? 1 : 0]); // 셋째 값: 1 = 혼자 떨어진 공
+      // 셋째 값: 1 = 혼자 떨어진 공. 넷째 값(v2, 검출 버전 4): 흰 점 넓이 px (공 크기 비용, track.ballSize·trackBall). v1 줄은 예전처럼 3칸
+      ball.push([sx[l] / cnt[l], sy[l] / cnt[l], bodyArea[body.lab[first[l]]] < 3 * cnt[l] ? 1 : 0, ...(v2 ? [cnt[l]] : [])]);
     }
   }
   if (!v2) return { players, ball }; // v1: 예전과 같은 모양
   return { players, ball, ...(split.length ? { split } : {}), ...bodyBlobs(body, bodyArea, teamOf, kept, T, w, N, cfg.minPx) };
 }
 
-// 조끼 색을 잠깐 놓친 아이 잇기용 (classical-v2, 검출 버전 3. 쓰는 규칙은 track.js TRACK_V2 bridge…)
+// 조끼 색을 잠깐 놓친 아이 잇기용 (classical-v2, 검출 버전 3부터. 쓰는 규칙은 track.js TRACK_V2 bridge…)
 // uncol: 조끼 색 픽셀이 minPx(팀 검출 최소 크기)보다 적은 움직임 덩어리 [[x, y, 넓이px], …] (덩어리 번호 순, 넓이 0.3×minPx 미만 잡티는 뺌)
 // kidFg: 팀 검출이 딱 하나 든 움직임 덩어리의 넓이 (팀마다 [넓이px, …]). 추적이 영상 전체 중앙값을 그 팀 "아이 한 명 몸 넓이"로 쓴다
 function bodyBlobs(body, area, teamOf, kept, T, w, N, minPx) {

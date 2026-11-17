@@ -58,6 +58,10 @@ export async function measureBodies(video, cfg, bg, signal) {
   } finally { wk.terminate(); }
 }
 
+/** 워커의 'det' 메시지 → analyzeFrames에 넣을 한 장면 (도구의 검출 줄과 같은 값: 공 줄은 v2면 [x, y, 혼자, 넓이px], 나누기 후보·색 없는 덩어리는 있을 때만).
+ * runAnalysis가 쓰고, 시험(tests/web-tool-ball.test.mjs)도 이 함수로 웹 경로 = 도구를 본다 */
+export const detFromWorker = m => ({ t: m.t, players: m.players, ball: m.ball, ...(m.split ? { split: m.split } : {}), ...(m.uncol ? { uncol: m.uncol, kidFg: m.kidFg } : {}) });
+
 /** 영상을 빠르게 재생하며 0.1초마다 한 장씩 워커에 보낸다. 결과 = analyzeFrames 출력 (기본 분석 방식) */
 export async function runAnalysis(video, cfg, bg, { onProgress, signal } = {}) {
   if (!('requestVideoFrameCallback' in HTMLVideoElement.prototype)) throw new Error('이 브라우저는 영상 분석을 지원하지 않아요. 최신 크롬이나 사파리를 써 주세요.');
@@ -81,7 +85,7 @@ export async function runAnalysis(video, cfg, bg, { onProgress, signal } = {}) {
   workers.forEach(w => {
     w.onmessage = ({ data: m }) => {
       if (m.type === 'error') return fail(new Error(m.message));
-      dets.push({ t: m.t, players: m.players, ball: m.ball, ...(m.split ? { split: m.split } : {}), ...(m.uncol ? { uncol: m.uncol, kidFg: m.kidFg } : {}) }); // v2: 나누기 후보·색 없는 덩어리 (도구의 검출 줄과 같은 값)
+      dets.push(detFromWorker(m));
       pending--; wake?.();
     };
     w.onerror = e => fail(new Error(e.message || '분석 중 오류'));

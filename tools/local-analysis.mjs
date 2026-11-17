@@ -1,6 +1,7 @@
 // 로컬 분석 도구 본체 (node 전용). ffmpeg로 영상을 읽어 브라우저와 같은 분석 코드(pipeline·vision)를 돌린다. 영상은 이 컴퓨터 밖으로 나가지 않는다.
 // - 배경: 영상 전체에서 고르게 최대 30장 → 픽셀별 중앙값 (장수가 영상 길이와 무관하게 유한)
 // - 검출: 처음부터 10fps로 순서대로 디코딩(장면 i의 시각 = i/10초). 이어 하기 때도 처음부터 디코딩하되 이미 검출한 장면은 건너뜀
+//   classical-v2의 장면 i = 브라우저가 currentTime i/10초에 보여 주는 장면 (frameFilter). classical-v1은 예전 디코딩 그대로
 // - 중간 저장: 결과 파일 옆 <결과 파일>.work/ 에 state.json(원자 저장)·background.rgba(원자 저장)·detections.jsonl(주기적으로 덧붙임)
 // - 이어 하기(--resume): 같은 영상(sha256·크기)·같은 설정(해시)일 때만. 쓰다 만 마지막 줄은 버리고 이어서
 // - 결과: 원자 저장(임시 파일 → 이름 바꾸기). 실패하면 원래 있던 결과 파일은 그대로
@@ -15,11 +16,19 @@ import { validateAnalysisConfig, parseAnalysisJob, parseAnalysisFile, RESULT_APP
 
 export const TOOL_VERSION = 1;
 // 검출 기록 버전 (classical-v2): 2 = 붙은 덩어리 나누기 후보(split) 추가, 3 = 색 없는 움직임 덩어리(uncol)·아이 한 명 몸덩어리 넓이(kidFg) 추가
-// (조끼 색을 잠깐 놓친 아이 잇기). 버전이 다른 v2 중간 저장은 섞지 않고 안내 후 거절. v1 검출은 예전 그대로(1)라 예전 v1 중간 저장도 이어 할 수 있다
-export const DETECT_VERSION = 3;
+// (조끼 색을 잠깐 놓친 아이 잇기), 4 = 장면 시각 맞추기(장면 i가 브라우저가 i/10초에 보여 주는 장면보다 한 장쯤 뒤이던 것을 바로잡음 → frameFilter)
+// + 공 후보 줄 넷째 칸에 흰 점 넓이 px(공 크기 비용, track.ballSize·trackBall). 버전이 다른 v2 중간 저장은 섞지 않고 안내 후 거절.
+// v1 검출은 예전 그대로(1, 공 줄 3칸)라 예전 v1 중간 저장도 이어 할 수 있다
+export const DETECT_VERSION = 4;
 const detectVersionOf = engine => (engine === 'classical-v1' ? 1 : DETECT_VERSION);
-const DETECT_BEFORE = { 1: '붙은 덩어리 나누기를 넣기 전', 2: '조끼 색을 잠깐 놓친 아이 잇기를 넣기 전' }; // 예전 v2 검출 기록 버전마다 빠진 것 (거절 안내용)
+const DETECT_BEFORE = { 1: '붙은 덩어리 나누기를 넣기 전', 2: '조끼 색을 잠깐 놓친 아이 잇기를 넣기 전', 3: '장면 시각 맞추기를 넣기 전' }; // 예전 v2 검출 기록 버전마다 빠진 것 (거절 안내용)
 export const FPS = Math.round(1 / DT); // 10 (결과 격자와 같음)
+/** 검출용 디코딩 필터 (처음부터 순서대로 읽어 출력 i번째 = 장면 i, 시각 i/10초).
+ * classical-v2: 장면 i = 브라우저가 currentTime i/10초에 보여 주는 장면 = pts ≤ i/10초인 마지막 장면 (첫 장면보다 이르면 첫 장면).
+ *   round=up: 장면 시각을 칸 번호로 올려 칸 i에 그 칸 시각 이하의 마지막 장면을 냄 (기본 round=near는 i/10+0.05초보다 이른 마지막 장면 → 30fps면 한 장(33ms) 뒤)
+ *   start_time=0: 첫 칸을 0초로 고정 (영상이 소리보다 늦게 시작해도 칸 번호가 밀리지 않고, 첫 장면 전 칸은 첫 장면)
+ * classical-v1: 예전 그대로 (v1 결과와 v1 중간 저장 이어 하기를 바꾸지 않음) */
+export const frameFilter = (engine, W, H) => `fps=${FPS}${engine === 'classical-v1' ? '' : ':round=up:start_time=0'},scale=${W}:${H}`;
 export const BG_FRAMES = 30;
 const FLUSH_EVERY = 50; // 검출 50장(영상 5초)마다 중간 저장
 const STATE = 'state.json', BG = 'background.rgba', DETS = 'detections.jsonl', LOCK = 'lock';
@@ -40,7 +49,8 @@ export const USAGE = `풋살 코치 로컬 분석 (영상은 이 컴퓨터에서
   --engine 이름  분석 방식: classical-v2(기본, 브라우저 분석과 같음: 움직임을 예측해 따라가고, 가려졌던 아이는
                  코트 가장자리·밖 검출을 여러 장면 맞을 때만 다시 잡음. 팀 인원은 선 밖 0.75m 넘는 사람을 빼고 세고,
                  0.3초 이하로 잠깐 안 보인 아이는 앞뒤를 이어 줌. 조끼 색을 잠깐 놓친 아이는 1.5초까지 그 자리의 색 없는
-                 움직임으로 잇되 색으로 다시 잡혀야 남김) 또는 classical-v1(예전 방식, 비교용). 결과 파일에 적혀요.
+                 움직임으로 잇되 색으로 다시 잡혀야 남김. 공은 영상에서 스스로 잰 공 크기에 가까운 흰 점을 따라감)
+                 또는 classical-v1(예전 방식, 비교용). 결과 파일에 적혀요.
   --resume       Ctrl+C로 멈췄던 분석을 이어서 해요 (같은 영상·같은 작업 설정일 때만). --engine을 안 주면
                  처음 분석하던 방식으로 이어 해요. 중간 저장은 결과 파일 옆 '<결과 파일>.work' 폴더에 있어요.
 
@@ -171,8 +181,8 @@ export function writeAtomic(file, data) {
   }
 }
 
-// 검출 한 장면: { i, t=i/10, players: 팀마다 [[x,y],…], ball: [[x,y,혼자1/0],…], split?: [[팀, 번호, [[x,y],…2~4개]],…],
-//   uncol?: [[x,y,넓이px],…], kidFg?: 팀마다 [넓이px,…] }  (split·uncol·kidFg는 v2 검출. uncol·kidFg는 검출 버전 3부터 늘 함께)
+// 검출 한 장면: { i, t=i/10, players: 팀마다 [[x,y],…], ball: v1 [[x,y,혼자1/0],…] · v2 [[x,y,혼자1/0,넓이px],…], split?: [[팀, 번호, [[x,y],…2~4개]],…],
+//   uncol?: [[x,y,넓이px],…], kidFg?: 팀마다 [넓이px,…] }  (split·uncol·kidFg는 v2 검출. uncol·kidFg는 검출 버전 3부터 늘 함께, 공 넓이는 검출 버전 4부터)
 // 모든 값은 유한한 숫자 (m 좌표, 넓이는 양수). split(v2 나누기 후보)의 번호는 그 팀 players 안의 자리, 같은 자리 두 번은 안 됨
 const finite = v => typeof v === 'number' && Number.isFinite(v);
 const row = (r, len) => Array.isArray(r) && r.length === len && r.every(finite);
@@ -182,13 +192,14 @@ const splitOk = (s, players) => s === undefined || (Array.isArray(s) && s.length
   && new Set(s.map(e => `${e[0]}:${e[1]}`)).size === s.length);
 const bodyOk = (u, kf, nTeams) => (u === undefined && kf === undefined) || (Array.isArray(u) && u.every(r => row(r, 3) && r[2] > 0)
   && Array.isArray(kf) && kf.length === nTeams && kf.every(l => Array.isArray(l) && l.every(v => finite(v) && v > 0)));
-export const detectionOk = (d, k, nTeams) => !!d && typeof d === 'object' && d.i === k && d.t === k / FPS
+const ballOk = (r, v2) => (v2 ? row(r, 4) && r[3] > 0 : row(r, 3)) && (r[2] === 0 || r[2] === 1); // v2 공 줄은 4칸(넓이 > 0), v1은 3칸
+export const detectionOk = (d, k, nTeams, engine = 'classical-v1') => !!d && typeof d === 'object' && d.i === k && d.t === k / FPS
   && Array.isArray(d.players) && d.players.length === nTeams && d.players.every(l => Array.isArray(l) && l.every(r => row(r, 2)))
-  && Array.isArray(d.ball) && d.ball.every(r => row(r, 3) && (r[2] === 0 || r[2] === 1)) && splitOk(d.split, d.players) && bodyOk(d.uncol, d.kidFg, nTeams);
+  && Array.isArray(d.ball) && d.ball.every(r => ballOk(r, engine !== 'classical-v1')) && splitOk(d.split, d.players) && bodyOk(d.uncol, d.kidFg, nTeams);
 
 /** 검출 기록(JSONL)을 읽는다. 쓰다 만 마지막 줄(줄바꿈 없음 또는 깨진 마지막 줄)은 버리고 파일도 거기까지 자른다.
- * 중간 줄이 깨졌거나 값이 이상하면(번호·시각·팀 수·좌표 칸 수·유한한 숫자) 이어 하지 않고 오류 */
-export function readDetections(file, nTeams) {
+ * 중간 줄이 깨졌거나 값이 이상하면(번호·시각·팀 수·좌표 칸 수·유한한 숫자, v2 공 줄은 넓이까지) 이어 하지 않고 오류 */
+export function readDetections(file, nTeams, engine = 'classical-v1') {
   if (!fs.existsSync(file)) return { dets: [], dropped: 0 };
   const buf = fs.readFileSync(file);
   let good = buf.lastIndexOf(0x0a) + 1; // 마지막 줄바꿈까지가 온전한 줄들
@@ -197,7 +208,7 @@ export function readDetections(file, nTeams) {
   for (let k = 0; k < lines.length; k++) {
     let d = null;
     try { d = JSON.parse(lines[k]); } catch {}
-    if (!detectionOk(d, k, nTeams)) {
+    if (!detectionOk(d, k, nTeams, engine)) {
       if (k === lines.length - 1) { good = Buffer.byteLength(lines.slice(0, k).map(x => x + '\n').join(''), 'utf8'); break; } // 깨진 마지막 줄만 버림
       throw new ToolError(`중간 저장 기록(${file})의 ${k + 1}번째 줄이 깨졌어요. 처음부터 다시 하려면 그 작업 폴더를 지운 뒤 --resume 없이 실행해 주세요.`, 2);
     }
@@ -385,7 +396,7 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
           const buf = fs.readFileSync(bp);
           if (sha256(buf) === state.background.sha256) { bg = new Uint8ClampedArray(buf.buffer, buf.byteOffset, buf.length); bgCount = state.background.frames; bodyPx = state.bodyPx ?? null; }
         }
-        const r = readDetections(path.join(work, DETS), config.teams.length);
+        const r = readDetections(path.join(work, DETS), config.teams.length, engine);
         dets = r.dets;
         say(`이어서 해요(분석 방식 ${engine}): 검출한 장면 ${dets.length}장을 불러왔어요${r.dropped ? ` (쓰다 만 마지막 줄 ${r.dropped}바이트는 버렸어요)` : ''}.`);
       } else {
@@ -427,12 +438,12 @@ export async function main(argv, { env = process.env, out = process.stdout, err 
     if (skip) say(`${skip + 1}번째 장면부터 검출해요 (앞 장면은 시각을 맞추려고 읽기만 해요).`);
     let decoded = 0;
     try {
-      decoded = await decodeFrames({ ffmpeg: b.ffmpeg, W, H, signal: ac.signal, args: ['-i', video, '-map', '0:v:0', '-vf', `fps=${FPS},scale=${W}:${H}`], onFrame: (f, i) => {
+      decoded = await decodeFrames({ ffmpeg: b.ffmpeg, W, H, signal: ac.signal, args: ['-i', video, '-map', '0:v:0', '-vf', frameFilter(engine, W, H)], onFrame: (f, i) => { // 이어 할 때도 같은 필터 → 같은 장면 대응
         if (i < skip) { if (i % 50 === 0) prog.line(`앞 장면 건너뛰는 중 ${i + 1}/${skip}장`); return; }
         const d = s.toMeters(detect(f, s.det));
         const line = JSON.stringify({ i, t: i / FPS, players: d.players, ball: d.ball, ...(d.split ? { split: d.split } : {}), ...(d.uncol ? { uncol: d.uncol, kidFg: d.kidFg } : {}) }); // v2: 나누기 후보·색 없는 덩어리
         const back = JSON.parse(line); // 이어 하기와 똑같은 입력이 되게 저장한 글자에서 다시 읽은 값을 쓴다
-        if (!detectionOk(back, i, config.teams.length)) throw new ToolError(`${i + 1}번째 장면 검출 값이 숫자가 아니에요 (코트 모서리 설정 문제일 수 있어요). 작업 설정을 다시 만들어 주세요.`, 1);
+        if (!detectionOk(back, i, config.teams.length, engine)) throw new ToolError(`${i + 1}번째 장면 검출 값이 숫자가 아니에요 (코트 모서리 설정 문제일 수 있어요). 작업 설정을 다시 만들어 주세요.`, 1);
         dets.push(back);
         pending.push(line);
         if (pending.length >= FLUSH_EVERY) flush();

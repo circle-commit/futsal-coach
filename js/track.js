@@ -332,12 +332,58 @@ export function playerStats(pos, hidden, dt, sprintMs = 4) {
   return { distance: v.reduce((a, b) => a + b, 0) * dt, topSpeed: v1.length ? v1.reduce((m, x) => Math.max(m, x), -Infinity) : 0, sprints, speed: v };
 }
 
+// 공 크기 비용 (classical-v2, 검출 버전 4: v2 공 후보 줄 넷째 값 = 흰 점 넓이 px).
+// 실제 영상의 공 흰 점은 번짐·압축 때문에 지름 20cm 이론 넓이의 3.5배쯤으로 보이고(합성은 0.9배), 영상마다 다르다 → 라벨 없이 영상에서 잰다 (ballSize).
+// w·tol: 그 자리 공 넓이의 ±50%(|ln 비| < ln 1.5) 안이면 비용을 덜고 밖이면 더함. 공 정답 개발용(t < 150초)으로 정하고 시험용으로 한 번 확인한 값 (2026-11-17)
+// minLen·maxStep·maxAcc·minSpeed·minPts: ballSize 길 잇기 (5장 이상, 한 걸음 2.5m 안, 앞 걸음과의 차이 1m 안, 초속 3m 넘는 걸음, 점 10개 이상)
+export const BALL_SIZE = Object.freeze({ w: 1.5, tol: Math.log(1.5), minLen: 5, maxStep: 2.5, maxAcc: 1.0, minSpeed: 3, minPts: 10 });
+
+/** 라벨 없이 이 영상의 공 넓이(m²) 재기. frames: [{ t, ball: [[x, y, 혼자 1/0, 넓이px], …] }], scale(X, Y) = 코트 (X,Y)m 자리의 화면 px²/m².
+ * 혼자 떨어진 코트 안 공 후보를 장면마다 이어 붙인 길(minLen장 이상)에서, 초속 minSpeed m 넘게 움직인 걸음이 닿은 점들의
+ * 넓이 px ÷ 그 자리 px²/m² 의 중앙값. 천천히 걷는 흰 옷 어른·멈춘 흰 점은 빠지고 차인 공이 남는다. 점이 minPts개 미만이면 null.
+ * 걸음 속도는 실제 장면 시각 차로 (웹 분석은 장면 간격이 정확히 0.1초가 아님). 시각 차는 1µs로 반올림해서 0.1초 간격(도구)이면 정확히 0.1 */
+export function ballSize(frames, court, scale, S = BALL_SIZE) {
+  const [L, W] = court, inside = b => Math.max(0, -b[0], b[0] - L, -b[1], b[1] - W) <= 0;
+  let open = [], done = []; // 길: [[후보, 장면 시각], …]
+  for (const f of frames) {
+    const pts = f.ball.filter(b => b[2] && b[3] > 0 && inside(b)), used = new Set(), next = [];
+    for (const ch of open) {
+      const [last] = ch[ch.length - 1], v = ch.length > 1 ? [last[0] - ch[ch.length - 2][0][0], last[1] - ch[ch.length - 2][0][1]] : null;
+      let best = -1, bd = Infinity;
+      pts.forEach((q, k) => {
+        if (used.has(k)) return;
+        const s = Math.hypot(q[0] - last[0], q[1] - last[1]); if (s > S.maxStep) return;
+        const acc = v ? Math.hypot(q[0] - last[0] - v[0], q[1] - last[1] - v[1]) : 0; if (acc > S.maxAcc) return;
+        if (acc + 0.1 * s < bd) { bd = acc + 0.1 * s; best = k; }
+      });
+      if (best >= 0) { used.add(best); ch.push([pts[best], f.t]); next.push(ch); } else done.push(ch);
+    }
+    pts.forEach((q, k) => { if (!used.has(k)) next.push([[q, f.t]]); });
+    open = next;
+  }
+  done.push(...open);
+  const vals = [];
+  for (const ch of done) {
+    if (ch.length < S.minLen) continue;
+    for (let k = 1; k < ch.length; k++) {
+      const [q, t] = ch[k], [p, t0] = ch[k - 1], dt = Math.round((t - t0) * 1e6) / 1e6;
+      if (dt > 0 && Math.hypot(q[0] - p[0], q[1] - p[1]) / dt >= S.minSpeed) vals.push(q[3] / scale(q[0], q[1]));
+    }
+  }
+  vals.sort((a, b) => a - b);
+  return vals.length >= S.minPts ? vals[Math.min(vals.length - 1, Math.floor(0.5 * vals.length))] : null;
+}
+
 /** 공 추적: 장면마다 공 후보 중 하나 또는 "안 보임"을 고르되, 영상 전체에서 비용이 가장 낮은 경로를 고른다(비터비).
- * 후보 [x, y, 혼자 떨어짐(1/0)]. 아이 몸에 붙은 흰 점(양말·신발·발밑 공)은 비싸게,
- * 멀리 순간이동은 못 하게 해서, 공이 아이에게 가면 그 아이 발밑을 따라가게 된다. */
-export function trackBall(frames) {
+ * 후보 [x, y, 혼자 떨어짐(1/0)(, 넓이px)]. 아이 몸에 붙은 흰 점(양말·신발·발밑 공)은 비싸게,
+ * 멀리 순간이동은 못 하게 해서, 공이 아이에게 가면 그 아이 발밑을 따라가게 된다.
+ * size = { am: ballSize 결과(m²), scale(X, Y): px²/m² } (classical-v2): 후보 비용에 w·(|ln(넓이 / (am·scale))| − tol)을 더해
+ * 공 크기의 흰 점을 고른다 (신발 끝처럼 작은 흰 점·흰 옷처럼 큰 흰 점은 비싸짐). size가 없으면 예전과 같다 (classical-v1) */
+export function trackBall(frames, size = null, S = BALL_SIZE) {
   const N = frames.length, MISS = 1.2, REACQ = 0.8;
-  const emis = c => (c[2] ? 0 : 1.1);
+  const emis = size
+    ? c => (c[2] ? 0 : 1.1) + (c[3] > 0 ? S.w * (Math.abs(Math.log(c[3] / (size.am * size.scale(c[0], c[1])))) - S.tol) : 0)
+    : c => (c[2] ? 0 : 1.1);
   let prev = [{ cost: 0, back: -1, pos: null }]; // 0번 상태 = 안 보임
   const hist = [];
   for (let i = 0; i < N; i++) {

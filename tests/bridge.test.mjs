@@ -35,22 +35,29 @@ function paint(disks) {
 }
 const S = setup(cfgP, paint([])); // 빈 코트가 배경
 
-test('검출: v2(몸 크기 줌)는 색 없는 움직임 덩어리(uncol)와 팀 검출 하나만 든 몸덩어리 넓이(kidFg)를 더 내고, players·ball·v1 모양은 그대로', () => {
-  // 빨강 둘(하나는 회색 바지가 붙음), 파랑 하나, 회색 옷 사람 하나(색 없음)
-  const f = paint([[40, 30, 5, RED], [100, 60, 5, RED], [100, 68, 4, GRAY], [150, 90, 5, BLUE], [60, 90, 6, GRAY]]);
+test('검출: v2(몸 크기 줌)는 색 없는 움직임 덩어리(uncol)와 팀 검출 하나만 든 몸덩어리 넓이(kidFg)를 더 내고, 공 후보 줄 넷째 칸에 흰 점 넓이(검출 버전 4). players와 공 줄 앞 세 칸·v1 모양은 그대로', () => {
+  // 빨강 둘(하나는 회색 바지가 붙음), 파랑 하나, 회색 옷 사람 하나(색 없음), 혼자 떨어진 흰 공 하나(반지름 2px = 13px: 10px/m 화면의 공 크기 상한 18.8px 안)
+  const f = paint([[40, 30, 5, RED], [100, 60, 5, RED], [100, 68, 4, GRAY], [150, 90, 5, BLUE], [60, 90, 6, GRAY], [170, 20, 2, [255, 255, 255]]]);
   const v1 = detect(f, S.det), v2 = detect(f, { ...S.det, bodyPx: [80, 80] });
   assert.deepEqual(Object.keys(v1), ['players', 'ball'], 'v1(몸 크기 없음)은 예전과 같은 모양');
-  assert.deepEqual(v2.players, v1.players); assert.deepEqual(v2.ball, v1.ball);
-  assert.equal(v2.uncol.length, 1, `색 없는 덩어리는 회색 옷 사람 하나 (조끼 색이 든 몸덩어리는 아님): ${JSON.stringify(v2.uncol)}`);
-  const [x, y, a] = v2.uncol[0];
+  assert.deepEqual(v2.players, v1.players);
+  assert.equal(v1.ball.length, 1, `흰 공이 공 후보: ${JSON.stringify(v1.ball)}`);
+  assert.ok(dist(v1.ball[0], [170, 20]) < 0.5 && v1.ball[0].length === 3 && v1.ball[0][2] === 1, `v1 공 줄 [x, y, 혼자]: ${JSON.stringify(v1.ball)}`);
+  assert.deepEqual(v2.ball.map(b => b.slice(0, 3)), v1.ball, 'v2 공 줄 앞 세 칸 = v1 공 줄');
+  assert.ok(v2.ball.every(b => b.length === 4 && Number.isInteger(b[3]) && b[3] > 0 && Math.abs(b[3] - 13) <= 6), `v2 공 줄 넷째 칸 = 흰 점 넓이 px (그린 흰 점 13px): ${JSON.stringify(v2.ball)}`);
+  // 색 없는 덩어리: 회색 옷 사람과 흰 공 (조끼 색이 든 몸덩어리는 아님)
+  assert.equal(v2.uncol.length, 2, `색 없는 덩어리는 회색 옷 사람·흰 공 둘: ${JSON.stringify(v2.uncol)}`);
+  assert.ok(v2.uncol.some(u => dist(u, [170, 20]) < 1), '흰 공도 색 없는 덩어리');
+  const [x, y, a] = v2.uncol.find(u => dist(u, [60, 90]) < 1) ?? [NaN, NaN, NaN];
   assert.ok(dist([x, y], [60, 90]) < 0.5 && Math.abs(a - Math.PI * 36) < 20, `중심 (${x}, ${y}) 넓이 ${a}px`);
   assert.equal(v2.kidFg.length, 2);
   assert.equal(v2.kidFg[0].length, 2, '빨강 둘 다 혼자 든 몸덩어리');
   assert.ok(v2.kidFg[0].some(v => v > 120), '회색 바지가 붙은 빨강은 바지까지 몸 넓이');
   assert.ok(v2.kidFg[0].some(v => Math.abs(v - Math.PI * 25) < 15) && Math.abs(v2.kidFg[1][0] - Math.PI * 25) < 15, JSON.stringify(v2.kidFg));
   const m = S.toMeters(v2); // m 좌표로 (넓이는 px 그대로)
-  assert.ok(dist(m.uncol[0], [6, 9]) < 0.05 && m.uncol[0][2] === a, JSON.stringify(m.uncol));
+  assert.ok(m.uncol.some(u => dist(u, [6, 9]) < 0.05 && u[2] === a), JSON.stringify(m.uncol));
   assert.deepEqual(m.kidFg, v2.kidFg);
+  assert.ok(dist(m.ball[0], [17, 2]) < 0.05 && m.ball[0][2] === 1 && m.ball[0][3] === v2.ball[0][3], `공 줄도 m 좌표로, 넓이 px는 그대로: ${JSON.stringify(m.ball)}`);
   assert.deepEqual(Object.keys(S.toMeters(v1)), ['players', 'ball']);
 });
 

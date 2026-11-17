@@ -70,6 +70,7 @@ test('작업 설정 → 결과 파일: 웹이 읽는 형식, 세션·원본 이�
   assert.equal(R.result.players.length, 4);
   assert.equal(R.result.dt, 0.1);
   assert.equal(R.analysis.engine, 'classical-v2'); // 기본값
+  assert.equal(R.analysis.detectVersion, 4); // 장면 시각 맞추기(검출 버전 4) 결과도 웹 가져오기 검사(parseAnalysisFile)가 받아들임
   assert.equal(R.analysis.sourceName, '원본 영상.mp4'); // 작업 설정의 원본 이름
   assert.equal(R.analysis.frames, 120);
   assert.ok(R.analysis.backgroundFrames > 0 && R.analysis.backgroundFrames <= 30, String(R.analysis.backgroundFrames));
@@ -286,24 +287,28 @@ test('분석 방식(--engine): 모르는 이름 거부, v2로 끝까지, 다른 
   assert.equal(parseAnalysisFile(read('v2.json')).analysis.engine, 'classical-v2');
 });
 
-test('검출 버전: v2 중간 저장은 지금 검출 버전(3)일 때만 이어 감 (예전 버전 1·2는 --resume이 있든 없든 바로 "지우고 다시" 안내, 폴더 그대로), 나누기 후보·색 없는 덩어리가 든 줄은 검사', { skip }, () => {
+test('검출 버전: v2 중간 저장은 지금 검출 버전(4)일 때만 이어 감 (예전 버전 1·2·3은 --resume이 있든 없든 바로 "지우고 다시" 안내, 폴더 그대로), 나누기 후보·색 없는 덩어리가 든 줄은 검사', { skip }, () => {
   assert.equal(run(['v.mp4', 'job.json', 'd2.json'], { FUTSAL_ANALYZE_TEST_INTERRUPT_AT: '20' }).status, 130); // 기본(v2)
   const st = read('d2.json.work/state.json');
   assert.equal(st.engine, 'classical-v2');
-  assert.equal(st.detect, 3);
+  assert.equal(st.detect, 4);
   assert.ok(Array.isArray(st.bodyPx) && st.bodyPx.length === 2 && st.bodyPx.every(v => v > 0), `팀별 몸 크기 ${JSON.stringify(st.bodyPx)}`);
 
-  // 검출 버전 3 줄: 색 없는 덩어리(uncol)와 팀마다 아이 한 명 몸 넓이(kidFg)
+  // 검출 버전 3부터의 줄(4도 같은 모양): 색 없는 덩어리(uncol)와 팀마다 아이 한 명 몸 넓이(kidFg)
   const f = p('d2.json.work/detections.jsonl'), ls = fs.readFileSync(f, 'utf8').split('\n');
   const rows = ls.filter(Boolean).map(l => JSON.parse(l));
   assert.ok(rows.every(d => Array.isArray(d.uncol) && Array.isArray(d.kidFg) && d.kidFg.length === 2), '모든 줄에 uncol·kidFg');
   assert.ok(rows.some(d => d.kidFg.every(l => l.length > 0)), '두 팀 모두 아이 한 명 몸 넓이가 기록됨');
   // 나누기 후보가 든 줄: 맞는 후보는 받아들이고, 번호가 틀린 후보·넓이가 0 이하인 색 없는 덩어리는 깨진 줄로 거부
+  // 공 후보 줄(검출 버전 4): v2는 [x, y, 혼자, 넓이px] 4칸·넓이 > 0 → 맞는 줄은 받아들이고, 넓이 칸이 없거나 0이면 깨진 줄(아래 d8·d9)
+  assert.ok(rows.every(d => d.ball.every(b => b.length === 4 && b[3] > 0)), 'v2 공 후보 줄은 4칸');
   const good = JSON.parse(ls[3]); good.split = [[0, 0, [[good.players[0][0][0] - 0.2, good.players[0][0][1]], [good.players[0][0][0] + 0.2, good.players[0][0][1]]]]];
-  fs.writeFileSync(f, [...ls.slice(0, 3), JSON.stringify(good), ...ls.slice(4)].join('\n'));
+  const ball4 = JSON.parse(ls[5]); ball4.ball = [[3, 4, 1, 27], [5, 6, 0, 12.5]];
+  fs.writeFileSync(f, [...ls.slice(0, 3), JSON.stringify(good), ls[4], JSON.stringify(ball4), ...ls.slice(6)].join('\n'));
   const ok = run(['v.mp4', 'job.json', 'd2.json', '--resume']);
   assert.equal(ok.status, 0, ok.stderr);
-  for (const [name, spoil] of [['d3', d => { d.split = [[0, 9, [[1, 1], [2, 2]]]]; }], ['d5', d => { d.uncol = [[1, 1, 0]]; }]]) { // d3: 그 팀 players에 9번이 없음
+  for (const [name, spoil] of [['d3', d => { d.split = [[0, 9, [[1, 1], [2, 2]]]]; }], ['d5', d => { d.uncol = [[1, 1, 0]]; }], // d3: 그 팀 players에 9번이 없음
+    ['d8', d => { d.ball = [[1, 1, 1]]; }], ['d9', d => { d.ball = [[1, 1, 1, 0]]; }]]) { // d8: v2 공 줄에 넓이 칸 없음(A만 넣은 버전 4 모양), d9: 넓이 0
     assert.equal(run(['v.mp4', 'job.json', `${name}.json`], { FUTSAL_ANALYZE_TEST_INTERRUPT_AT: '20' }).status, 130);
     const f3 = p(`${name}.json.work/detections.jsonl`), l3 = fs.readFileSync(f3, 'utf8').split('\n');
     const bad = JSON.parse(l3[3]); spoil(bad);
@@ -315,8 +320,9 @@ test('검출 버전: v2 중간 저장은 지금 검출 버전(3)일 때만 이�
 
   // 예전 도구로 만든 v2 중간 저장 → 이어 하지 않고 지운 뒤 다시 하라고 안내, 폴더는 그대로 (v1 중간 저장은 위 '분석 방식' 시험처럼 그대로 이어 감)
   for (const [name, old, re] of [
-    ['d4', s => { delete s.detect; delete s.bodyPx; }, /붙은 덩어리 나누기를 넣기 전 도구로 검출한 classical-v2 기록이라 이어 할 수 없어요 \(검출 기록 버전 1, 지금 도구는 3\).*지운 뒤 --resume 없이 다시 실행/s], // 검출 버전 기록 없음
-    ['d6', s => { s.detect = 2; }, /조끼 색을 잠깐 놓친 아이 잇기를 넣기 전 도구로 검출한 classical-v2 기록이라 이어 할 수 없어요 \(검출 기록 버전 2, 지금 도구는 3\).*지운 뒤 --resume 없이 다시 실행/s],
+    ['d4', s => { delete s.detect; delete s.bodyPx; }, /붙은 덩어리 나누기를 넣기 전 도구로 검출한 classical-v2 기록이라 이어 할 수 없어요 \(검출 기록 버전 1, 지금 도구는 4\).*지운 뒤 --resume 없이 다시 실행/s], // 검출 버전 기록 없음
+    ['d6', s => { s.detect = 2; }, /조끼 색을 잠깐 놓친 아이 잇기를 넣기 전 도구로 검출한 classical-v2 기록이라 이어 할 수 없어요 \(검출 기록 버전 2, 지금 도구는 4\).*지운 뒤 --resume 없이 다시 실행/s],
+    ['d7', s => { s.detect = 3; }, /장면 시각 맞추기를 넣기 전 도구로 검출한 classical-v2 기록이라 이어 할 수 없어요 \(검출 기록 버전 3, 지금 도구는 4\).*지운 뒤 --resume 없이 다시 실행/s], // 636586b 도구의 v2 중간 저장
   ]) {
     assert.equal(run(['v.mp4', 'job.json', `${name}.json`], { FUTSAL_ANALYZE_TEST_INTERRUPT_AT: '20' }).status, 130);
     const s4 = read(`${name}.json.work/state.json`); old(s4);
