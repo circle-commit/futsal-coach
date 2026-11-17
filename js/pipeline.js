@@ -1,7 +1,8 @@
 // 설정(코트 모서리·팀 색) → 검출 설정, 그리고 검출 결과 → 최종 분석 결과.
 import { homography, applyH, courtMask } from './vision.js';
-import { rosterCounts, trackPlayers, trackBall, resample, resampleFlags, playerStats, possession, inPlayFrames } from './track.js';
+import { rosterCounts, trackPlayers, trackBall, resample, resampleFlags, inPlayFrames } from './track.js';
 import * as trackApi from './track.js'; // ballSize는 새로 들어온 것: 배포 직후 옛 track.js가 캐시에 남은 탭·워커에서도 모듈 오류 없이 열리게 이름공간으로 읽는다 (없으면 예전 공 고르기)
+import { fillStats } from './stats.js'; // 통계: 검수 다시 계산(review.recomputeStats)과 같은 함수. 새 파일이라 이름으로 가져와도 캐시 섞임에 안전
 
 export const DT = 0.1; // 결과는 0.1초 간격
 
@@ -62,26 +63,22 @@ export function analyzeFrames(dets, cfg, { engine = DEFAULT_ENGINE } = {}) {
   const ballRaw = am ? trackBall(dets, { am, scale }) : trackBall(dets);
   const players = tracked.map(p => ({ team: p.team, pos: resample(times, p.pos, DT), hidden: resampleFlags(times, p.hidden, DT) }));
   const ball = resample(times, ballRaw, DT);
-  const pz = possession(ball, players, DT);
+  // 저장되는 모양(0.01m 경로·공·가려짐)을 먼저 만들고, 통계는 검수 다시 계산과 같은 함수(stats.fillStats)로 그 값에서 센다
+  // → 교정 안 한 결과는 다시 계산해도 같은 숫자 (통계 칸은 자리만 잡아 두고 fillStats가 채움)
   const num = {};
   const out = players.map((p, id) => {
     num[p.team] = (num[p.team] || 0) + 1;
-    const s = playerStats(p.pos, p.hidden, DT);
     return {
       id, team: p.team, label: `${cfg.teams[p.team].name} ${num[p.team]}`,
-      distance: s.distance, topSpeed: s.topSpeed, sprints: s.sprints,
-      possession: pz.time[id], touches: pz.touches[id],
-      passes: pz.passes.filter(x => x.from === id).length, received: pz.passes.filter(x => x.to === id).length,
-      lost: pz.turnovers.filter(x => x.from === id).length,
+      distance: 0, topSpeed: 0, sprints: 0, possession: 0, touches: 0, passes: 0, received: 0, lost: 0,
       path: r2(p.pos), hidden: Array.from(p.hidden),
     };
   });
   let seen = 0; for (let i = 0; i < ball.length; i += 2) if (!Number.isNaN(ball[i])) seen++;
-  return {
+  return fillStats({
     dt: DT, court: cfg.court, teams: cfg.teams.map(({ name, color }) => ({ name, color })), counts,
-    duration: times[times.length - 1], players: out, ball: r2(ball), passes: pz.passes, turnovers: pz.turnovers,
-    hiddenRate: out.reduce((a, p) => a + p.hidden.reduce((x, y) => x + y, 0) / p.hidden.length, 0) / out.length,
+    duration: times[times.length - 1], players: out, ball: r2(ball), passes: [], turnovers: [], hiddenRate: 0,
     ballSeen: seen / (ball.length / 2),
     video: { width: cfg.width, height: cfg.height, corners: cfg.corners },
-  };
+  });
 }

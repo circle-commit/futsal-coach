@@ -2,7 +2,9 @@
 // result는 pipeline.analyzeFrames 출력(= 저장된 결과) 모양이고 players[k].id === k 여야 한다.
 // 입력은 절대 고치지 않고 항상 새 결과를 돌려준다. 원본 세션 보존·되돌리기는 화면(UI) 담당이고,
 // 여기서는 교정 기록(reviewEdits)과 교정 경계(players[].reviewBreaks)만 결과에 남긴다.
-import { playerStats, possession } from './track.js';
+// 통계는 분석 직후(pipeline.analyzeFrames)와 같은 함수로 센다 (stats.fillStats: 저장된 경로·공·가려짐·교정 경계 → 같은 결과면 같은 숫자)
+import { fillStats as restat, reviewBreakIndices } from './stats.js'; // 새 파일이라 이름으로 가져와도 캐시 섞임에 안전
+export { reviewBreakIndices }; // 예전처럼 review.js에서도 내보냄
 
 /** 검토 후보·교정 경계 기준. 모두 휴리스틱이라 "오류 확정"이 아니라 "사람이 확인할 곳"이다. */
 export const REVIEW_RULES = {
@@ -34,38 +36,10 @@ function check(R) {
   return { dt: R.dt, n };
 }
 
-/** 선수의 교정 경계를 격자 칸 번호로. 칸 j가 경계면 (j-1 → j) 연결이 교정으로 생긴 인위적 연결이다 (실제 이동 아님). */
-export const reviewBreakIndices = (p, dt) => Array.from(p?.reviewBreaks || [], t => Math.round(t / dt)).filter(Number.isInteger);
-
-// 통계용 임시 마스크(저장 안 함) = 가려짐 | 좌표 없음(null) | 교정 경계.
-// playerStats는 마스크 칸 j가 있으면 0.5초 평균 위치로 잰 속도 v[j-5..j]를 0으로 친다.
-// (j-1 → j) 점프가 섞이는 속도는 정확히 v[j-5..j-1], 칸 j의 NaN이 섞이는 속도는 v[j-5..j]라서
-// 경계 점프·모르는 좌표가 뛴 거리·최고 속도·질주 어디에도 남지 않는다.
-function statMask(p, pos, n, dt) {
-  const m = new Uint8Array(n);
-  for (let i = 0; i < n; i++) m[i] = p.hidden[i] || Number.isNaN(pos[2 * i]) || Number.isNaN(pos[2 * i + 1]) ? 1 : 0;
-  for (const j of reviewBreakIndices(p, dt)) if (j >= 0 && j < n) m[j] = 1;
-  return m;
-}
-
-// R(이미 복사본)의 통계를 경로·가려짐·공·교정 경계에서 처음부터 다시 계산해 채운다
-function restat(R) {
-  const dt = R.dt, pos = R.players.map(p => Float32Array.from(p.path, num)); // 분석(analyzeFrames) 때처럼 Float32
-  const pz = possession(Float32Array.from(R.ball, num), R.players.map((p, k) => ({ team: p.team, pos: pos[k] })), dt); // NaN 선수·공은 소유 판정에서 빠짐
-  R.players.forEach((p, k) => {
-    const s = playerStats(pos[k], statMask(p, pos[k], p.hidden.length, dt), dt);
-    Object.assign(p, {
-      distance: s.distance, topSpeed: s.topSpeed, sprints: s.sprints, possession: pz.time[k], touches: pz.touches[k],
-      passes: pz.passes.filter(x => x.from === k).length, received: pz.passes.filter(x => x.to === k).length, lost: pz.turnovers.filter(x => x.from === k).length,
-    });
-  });
-  R.passes = pz.passes; R.turnovers = pz.turnovers;
-  R.hiddenRate = R.players.reduce((a, p) => a + p.hidden.reduce((x, y) => x + (y ? 1 : 0), 0) / p.hidden.length, 0) / R.players.length; // 진짜 가려짐만 (경계는 안 셈)
-  return R;
-}
+// restat(R) = stats.fillStats: R(이미 복사본)의 통계를 경로·가려짐·공·교정 경계에서 처음부터 다시 계산해 채운다 (통계용 마스크 = 가려짐 | 좌표 없음 | 교정 경계)
 
 /** 결과의 모든 통계를 저장된 경로·가려짐·공·교정 경계로 다시 계산한 새 결과. 입력은 그대로.
- * 저장된 경로는 0.01m로 반올림돼 있어서, 교정 안 한 결과도 분석 직후 값과 아주 조금 다를 수 있다. */
+ * 분석 직후 통계도 같은 함수(stats.fillStats)로 저장되는 0.01m 경로에서 세므로, 교정 안 한 결과는 분석 직후 값과 정확히 같다. */
 export const recomputeStats = result => (check(result), restat(structuredClone(result)));
 
 const STAT_KEYS = ['distance', 'topSpeed', 'sprints', 'possession', 'touches', 'passes', 'received', 'lost'];

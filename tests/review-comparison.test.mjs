@@ -97,10 +97,11 @@ test('비교: 저장된 통계가 낡았거나 틀려도 경로가 같으면 del
   }
 });
 
-test('비교: 실제 파이프라인 결과에서 저장값 반올림 차이만으로는 delta가 생기지 않는다 (이 예에서 교정과 관계없는 아이는 정확히 0)', () => {
+test('비교: 실제 파이프라인 결과는 다시 계산해도 저장값과 같은 숫자이고(분석 직후·다시 계산이 같은 함수·같은 0.01m 입력), 교정과 관계없는 아이는 delta 정확히 0', () => {
   const R = pipelineResult(), re = recomputeStats(R);
-  // 준비: 저장값과 재계산값이 실제로 다름 (저장값끼리 비교하면 관계없는 아이에게도 가짜 변화가 보이는 상황)
-  assert.ok(R.players.some((p, k) => p.distance !== re.players[k].distance), '준비: 저장값과 재계산값이 같으면 이 테스트는 의미 없음');
+  // 분석 직후 저장값 = 다시 계산값 (예전엔 분석 직후만 반올림 전 위치로 세서 달랐음)
+  R.players.forEach((p, k) => assert.deepEqual(statsOf(re.players[k]), statsOf(p), `선수${k} 저장값 = 다시 계산값`));
+  assert.deepEqual([re.passes, re.turnovers, re.hiddenRate], [R.passes, R.turnovers, R.hiddenRate]);
   const cur = swapPlayerSegment(R, { playerA: 0, playerB: 1, start: 40, end: 70 });
   const rows = compareReviewResults(R, cur);
   assertRows(rows, R, cur);

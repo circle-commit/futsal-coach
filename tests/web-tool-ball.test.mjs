@@ -114,7 +114,7 @@ test('웹 분석 경로(워커 → detFromWorker → analyzeFrames)와 로컬 �
 test('배포 직후 캐시 섞임: 새 pipeline.js와 옛 track.js(ballSize를 안 내보냄)가 만나도 모듈 오류 없이 불러지고 예전 공 고르기로 돎', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'futsal-oldtrack-'));
   try {
-    for (const f of ['pipeline.js', 'vision.js', 'track.js']) fs.copyFileSync(fileURLToPath(new URL(`../js/${f}`, import.meta.url)), path.join(tmp, f));
+    for (const f of ['pipeline.js', 'vision.js', 'track.js', 'stats.js']) fs.copyFileSync(fileURLToPath(new URL(`../js/${f}`, import.meta.url)), path.join(tmp, f));
     const src = fs.readFileSync(path.join(tmp, 'track.js'), 'utf8');
     assert.equal(src.split('export function ballSize(').length, 2);
     fs.writeFileSync(path.join(tmp, 'track.js'), src.replace('export function ballSize(', 'function ballSize(')); // 옛 track.js 흉내: ballSize를 안 내보냄

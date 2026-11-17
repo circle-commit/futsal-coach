@@ -423,8 +423,15 @@ export function trackBall(frames, size = null, S = BALL_SIZE) {
   return out;
 }
 
+// 공 소유 규칙 (v1·v2 공통): 공에서 near m 안의 가장 가까운 아이가 그 칸의 소유자, minCells칸(0.2초) 이상 이어져야 소유 구간.
+// 같은 아이의 앞뒤 구간은 사이가 mergeGap초 이하일 때만 하나로 합치고 그 사이도 그 아이 소유로 센다. 더 길면 따로 둔 구간(터치도 따로)이고,
+// 같은 아이끼리는 패스·뺏김으로 세지 않는다 (예전엔 사이 시간 제한 없이 합쳐서, 사이에 다른 아이 0.2초 구간 하나가 생기거나 없어지면
+// 몇 초~몇십 초가 한 아이에게 붙거나 떨어졌고, 공이 오래 아무에게도 없거나 안 보인 시간도 그 아이 소유로 셌다).
+// 다른 아이 사이의 넘김은 passGap초 안이면 같은 팀 → 패스, 다른 팀 → 뺏김
+export const POSSESSION = Object.freeze({ near: 1.0, minCells: 2, mergeGap: 1.0, passGap: 4 });
+
 /** 공 소유와 패스. ball: 격자 위 [x,y](NaN=모름), players: [{team, pos}] */
-export function possession(ball, players, dt, near = 1.0) {
+export function possession(ball, players, dt, near = POSSESSION.near) {
   const n = ball.length / 2, owner = new Int16Array(n).fill(-1);
   for (let i = 0; i < n; i++) {
     const bx = ball[2 * i], by = ball[2 * i + 1];
@@ -436,15 +443,16 @@ export function possession(ball, players, dt, near = 1.0) {
   const segs = []; // 0.2초 이상 공을 가진 구간
   for (let i = 0; i < n;) {
     let j = i; while (j < n && owner[j] === owner[i]) j++;
-    if (owner[i] >= 0 && j - i >= 2) segs.push({ p: owner[i], s: i, e: j });
+    if (owner[i] >= 0 && j - i >= POSSESSION.minCells) segs.push({ p: owner[i], s: i, e: j });
     i = j;
   }
-  const merged = [];
-  for (const g of segs) { const l = merged[merged.length - 1]; if (l && l.p === g.p) l.e = g.e; else merged.push({ ...g }); }
+  const merged = []; // 같은 아이의 앞뒤 구간은 사이가 mergeGap초 이하일 때만 합침 (사이도 그 아이 소유)
+  for (const g of segs) { const l = merged[merged.length - 1]; if (l && l.p === g.p && (g.s - l.e) * dt <= POSSESSION.mergeGap + 1e-9) l.e = g.e; else merged.push({ ...g }); }
   const passes = [], turnovers = [];
   for (let k = 1; k < merged.length; k++) {
     const a = merged[k - 1], b = merged[k];
-    if ((b.s - a.e) * dt > 4) continue; // 너무 오래 끊겼으면 이어진 플레이로 안 봄
+    if (a.p === b.p) continue; // 같은 아이가 오래 끊겼다 다시 잡음: 패스·뺏김 아님
+    if ((b.s - a.e) * dt > POSSESSION.passGap) continue; // 너무 오래 끊겼으면 이어진 플레이로 안 봄
     (players[a.p].team === players[b.p].team ? passes : turnovers).push({ from: a.p, to: b.p, t: +(a.e * dt).toFixed(1) });
   }
   const time = players.map((_, k) => merged.filter(g => g.p === k).reduce((s, g) => s + (g.e - g.s) * dt, 0));
